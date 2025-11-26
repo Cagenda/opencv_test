@@ -23,6 +23,6 @@ include_directories(
 
 )
 # 定义一个名为 cv 的可执行目标，该目标将从 main.cpp 源文件生成。
-add_executable(app test1.cpp )
+add_executable(app test1.cpp thread_pool.cpp)
 # 将 OpenCV 的库与目标可执行文件 cv 链接，确保在程序运行时能够调用 OpenCV 函数。
 target_link_libraries(app ${OpenCV_LIBS})

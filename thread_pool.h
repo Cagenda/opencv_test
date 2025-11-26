@@ -20,7 +20,6 @@ public:
 
 
 private:
-    int init(int num_thread);
     std::atomic<bool> run;//用来判断线程池是否关闭
     std::queue<std::pair<int, cv::Mat>> tasks;//定义任务队列
 

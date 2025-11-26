@@ -7,14 +7,14 @@
 #include "SafeQueue.h"
 #include <mutex>
 #include <map>
-#include"thread_pool.h"
+#include "thread_pool.h"
 // 2. 包含图像I/O和GUI函数头文件， 定义了 imread, imshow, waitKey#include <iostream>
 using namespace std;
 using namespace cv;
 
-//定义一个线程池
-ThreadPool gthreadpool(6);
-static int g_frame_start_id = 0;//用于帧的起始id
+// 定义一个线程池
+ThreadPool gthreadpool(12);
+static int g_frame_start_id = 0; // 用于帧的起始id
 
 // 定义每一帧（也就是每一张的图片）的信息
 struct FrameData
@@ -77,7 +77,6 @@ void Thread_ProcressVideo(SafeQueue<FrameData> &r_queue, SafeQueue<FrameData> &w
             printf("process end\n");
             break;
         }
-
         // （A）第一部分：从 r_queue 取出帧 → 临时放入 map
         // dequeue() 会安全地把一帧拿出来放入 frame_temp
         r_queue.dequeue(frame_temp); // 从刚刚读取视频的队列中取出一帧放入frame_temp里面，dequeue是安全的（不需要再去判断队列是否
@@ -96,8 +95,10 @@ void Thread_ProcressVideo(SafeQueue<FrameData> &r_queue, SafeQueue<FrameData> &w
             if (it != ProcessFrameBuffer.end())
             {
                 img = it->second;
+
                 // -----处理图像待完成
-                gthreadpool.sumbit_task(img.clone(),g_frame_start_id++);//在这里next_index不是0？第一次循环确实是0，但是后面又++
+                gthreadpool.sumbit_task(img.clone(), g_frame_start_id++); // 在这里next_index不是0？第一次循环确实是0，但是后面又++
+
                 gthreadpool.get_result(img, next_index);
                 //------------
 
@@ -204,6 +205,9 @@ void Thread_WriterVideo(cv::VideoWriter &writer, SafeQueue<FrameData> &img_q, bo
 // 主函数
 int main()
 {
+    // 记录时间
+    auto start = std::chrono::steady_clock::now();
+
     // 测试视频
     char video_path[] = "1.mp4";
     cv::VideoCapture cap(video_path);
@@ -251,6 +255,11 @@ int main()
     }
 
     video_p.join(); // 等待处理视频线程完成
+    auto end = std::chrono::steady_clock::now();
+    auto dur = std::chrono::duration_cast<std::chrono::milliseconds>(end - start);
+    std::cout << "程序总运行时间：" << dur.count() << " ms\n";
+
     video_w.join(); // 等待写入视频线程完成
+
     return 0;
 }

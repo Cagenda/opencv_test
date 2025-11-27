@@ -7,6 +7,7 @@
 #include "SafeQueue.h"
 #include <mutex>
 #include <map>
+#include "yolov5s.h"
 #include "thread_pool.h"
 // 2. 包含图像I/O和GUI函数头文件， 定义了 imread, imshow, waitKey#include <iostream>
 using namespace std;
@@ -225,6 +226,8 @@ int main()
 
     printf("size:%d height:%d fps:%f total:%d\n", width, height, fps, frame_num);
 
+    Yolov5s yolov5s("/home/orangepi/opencv_test/model/yolov5s.rknn", 0);
+    while (1);
     // 定义锁(全局)，专门用于在读取原视频的时候，锁住，防止多个线程读取原视频
     mutex cap_m;
 

@@ -225,9 +225,17 @@ int main()
     int frame_num = cap.get(CAP_PROP_FRAME_COUNT);
 
     printf("size:%d height:%d fps:%f total:%d\n", width, height, fps, frame_num);
-
+    cv::Mat img_tmp;
+    cap.read(img_tmp);
+    if (img_tmp.empty())
+    {
+        perror("img_tmp failed");
+    }
     Yolov5s yolov5s("/home/orangepi/opencv_test/model/yolov5s.rknn", 0);
-    while (1);
+    yolov5s.inference_image(img_tmp);
+
+    while (1)
+        ;
     // 定义锁(全局)，专门用于在读取原视频的时候，锁住，防止多个线程读取原视频
     mutex cap_m;
 
@@ -261,8 +269,6 @@ int main()
     auto end = std::chrono::steady_clock::now();
     auto dur = std::chrono::duration_cast<std::chrono::milliseconds>(end - start);
     std::cout << "程序总运行时间：" << dur.count() << " ms\n";
-
     video_w.join(); // 等待写入视频线程完成
-
     return 0;
 }

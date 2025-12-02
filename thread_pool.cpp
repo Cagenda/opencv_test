@@ -6,7 +6,7 @@ ThreadPool::ThreadPool(int num_thread) : run(true)
     for (size_t i = 0; i < num_thread; i++)
     {
         // 创建了工作者线程
-      
+
         threads.emplace_back(&ThreadPool::worker, this, i);
     }
     std::cout << "ThreadPool Init" << std::endl;
@@ -57,7 +57,7 @@ void ThreadPool::worker(int id)
 
         // 接下来是对取出来的任务进行处理
         //===================
-        
+
         //===================
         // 任务完成之后插入结果
         {

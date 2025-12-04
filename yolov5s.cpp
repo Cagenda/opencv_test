@@ -139,11 +139,13 @@ int Yolov5s::inference_image(const cv::Mat &orign_img)
     printf("Resize Channel   :%d\n", resize_channel);
 
     auto start = std::chrono::high_resolution_clock::now();
-    // opencv处理图像
+    // // opencv处理图像
     // cv::Mat img_cvt;    // 存放颜色空间转换后的图像（RGB）
     // cv::Mat img_resize; // 存放 resize 后的图像（模型输入大小）
     // cv::cvtColor(orign_img, img_cvt, cv::COLOR_BGR2RGB);
     // cv::resize(img_cvt, img_resize, cv::Size(resize_width, resize_height), 0, 0, cv::INTER_AREA);
+    // auto end = std::chrono::high_resolution_clock::now();
+    // auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end - start);
     // printf("Opencv Process time:%ld   ms \n", duration.count());
     // cv::imwrite("img_cv_intera.jpg", img_resize);
 
@@ -183,6 +185,8 @@ int Yolov5s::inference_image(const cv::Mat &orign_img)
     printf("RGA Process time:%ld   ms \n", duration.count());
     cv::Mat img_rga(resize_height, resize_width, CV_8UC3, dst_buf);
     cv::imwrite("img_rga.jpg", img_rga);
+
+    
     //===============================释放空间==================================
     if (src_handle)
     {

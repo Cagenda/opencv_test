@@ -23,6 +23,12 @@ struct FrameData
     cv::Mat frame; // 创建一个Mat类型的图片（也就是一帧）
     int index;     // 帧索引
 };
+// 定义“流水线任务”结构体：我们需要一个结构体来暂存“发出去的订单”。
+struct PendingTask
+{
+    int index;                // 帧序号
+    std::future<cv::Mat> fut; // 取餐票 (注意这里是 future<Mat>)
+};
 
 // 创建读取视频队列
 SafeQueue<FrameData> SafeQueue_Read;
@@ -59,59 +65,67 @@ void Thread_ReadVideo(VideoCapture &video, SafeQueue<FrameData> &img_queue, int 
 }
 
 // 2.处理视频
-std::map<int, Mat> ProcessFrameBuffer;
+// mutex bufferMutex;// std::map<int, Mat> ProcessFrameBuffer;
 // ProcessFrameBuffer 是“帧处理缓冲区”
-mutex bufferMutex;
 // map 是共享资源，多线程访问必须加锁,所以配套bufferMutex
-void Thread_ProcressVideo(SafeQueue<FrameData> &r_queue, SafeQueue<FrameData> &w_queue, bool &finish)
+void Thread_ProcressVideo(SafeQueue<FrameData> &r_queue, SafeQueue<FrameData> &w_queue, bool &read_finish, bool &process_finish)
 {
     // r_queue：读线程生产的帧队列（input）
     // w_queue：你准备传给写线程的处理后队列（output），但现在你还没用它
     // finished：读线程是否结束
-    FrameData frame_temp;
-    int next_index = 0;
+    // A. 定义流水线深度
+    // 允许同时有 16 个任务在后台跑 (建议略大于线程数 12)
+    const int PIPELINE_LIMIT = 16; // PIPELINE_LIMIT：防止内存爆掉。如果不限制，读线程可能瞬间读几千帧塞进线程池，导致内存溢
+
+    // B. 定义流水线队列，这个队列用来按顺序保存发出去的任务凭证
+    std::queue<PendingTask> pipeline;
+    printf("Process thread started...\n");
+
     while (true)
     {
-        if (finish && r_queue.empty())
+        // =========================================================
+        // C. 发货阶段 (Filling Pipeline)
+        // 只要流水线没满，且有数据，就一直往线程池里塞
+        // =========================================================
+        while (pipeline.size() < PIPELINE_LIMIT)
         {
-            printf("process end, total processed = %d\n", next_index);
-            printf("process end\n");
-            break;
-        }
-        // （A）第一部分：从 r_queue 取出帧 → 临时放入 map
-        // dequeue() 会安全地把一帧拿出来放入 frame_temp
-        r_queue.dequeue(frame_temp); // 从刚刚读取视频的队列中取出一帧放入frame_temp里面，dequeue是安全的（不需要再去判断队列是否
-        {
-            // 将帧写入处理缓冲区
-            lock_guard<mutex> lock(bufferMutex); // 一定要枷锁，map<int, Mat> 是共享容器，多线程同时写 map 会崩溃
-            ProcessFrameBuffer[frame_temp.index] = frame_temp.frame.clone();
-        }
-        // （B）第二部分：从 map 里按顺序处理帧
-        // 先判断要处理的下一帧（按顺序）图像是否放在缓冲里
-
-        while (!ProcessFrameBuffer.empty() && ProcessFrameBuffer.count(next_index))
-        {
-            Mat img;
-            auto it = ProcessFrameBuffer.find(next_index);
-            if (it != ProcessFrameBuffer.end())
+            if (r_queue.empty() | finish)
             {
-                img = it->second;
-
-                // -----处理图像待完成
-                gthreadpool.sumbit_task(img.clone(), g_frame_start_id++); // 在这里next_index不是0？第一次循环确实是0，但是后面又++
-
-                gthreadpool.get_result(img, next_index);
-                //------------
-
-                // 入队
-                w_queue.enqueue({img, next_index});
-                ProcessFrameBuffer.erase(it);
-                if (next_index > 0 && next_index % 10 == 0)
-                {
-                    printf("process index %d finished \n", next_index);
-                }
-                next_index++;
+                break;
             }
+            FrameData frame_in;
+            r_queue.dequeue(frame_in); // 取出数据
+                                       // 【关键修改】提交给线程池，拿到 Future原来是 get_result 死等，现在是 submit_task 立刻拿票走人
+            std::future<cv::Mat> fut = gthreadpool.sumbit_task(frame_in.frame, frame_in.index);
+            // 【关键修改】存入流水线使用 std::move 是因为 future 只能移动不能复制
+            pipeline.push({frame_in.index, std::move(fut)});
+            printf("已提交帧: %d\n", frame_in.index);
+        }
+        // =========================================================
+        // D. 收货阶段 (Filling Pipeline)
+        // =========================================================
+        if (!pipeline.empty())
+        {
+            // 获取队头任务
+            PendingTask &front_task = pipeline.front();
+
+            // 获取结果，但是.get是阻塞，如果后台还没算完，这里死等
+            cv::Mat res = front_task.fut.get();
+            // 传给写队列
+            w_queue.enqueue({res, front_task.index});
+            pipeline.pop();
+        }
+
+        // 1. 读线程说完了 (read_finish)
+        // 2. 读队列空了
+        // 3. 流水线里的任务也都回收完
+        if (read_finish && r_queue.empty() && pipeline.empty())
+        {
+            printf("处理线程全部结束。\n");
+
+            // 【关键】交出接力棒，告诉写线程：我也完了，你可以走了
+            process_finish = true;
+            break;
         }
     }
 }
@@ -234,8 +248,6 @@ int main()
     Yolov5s yolov5s("/home/orangepi/opencv_test/model/yolov5s.rknn", 0);
     yolov5s.inference_image(img_tmp);
 
-    while (1)
-        ;
     // 定义锁(全局)，专门用于在读取原视频的时候，锁住，防止多个线程读取原视频
     mutex cap_m;
 
@@ -243,10 +255,14 @@ int main()
     int img_index = -1;
     int num_thread = 1;
     bool finished = false; // 判断读取是否结束
+
+    bool is_process_finish = false; // 2. 处理线程是否结束的标志 (新增这个!)
+    bool is_read_finish = false;    // 1. 读线程是否结束的标志
+
     std::vector<thread> video_readers;
     for (int i = 0; i < num_thread; i++)
     {
-        video_readers.emplace_back(Thread_ReadVideo, ref(cap), ref(SafeQueue_Read), ref(img_index), ref(cap_m), ref(finished));
+        video_readers.emplace_back(Thread_ReadVideo, ref(cap), ref(SafeQueue_Read), ref(img_index), ref(cap_m), ref(is_read_finish));
     }
 
     // 写入视频
@@ -254,10 +270,10 @@ int main()
     cv::VideoWriter writer("/home/orangepi/opencv_test/output.avi", cv::VideoWriter::fourcc('I', '4', '2', '0'), fps, frame_size);
 
     // 创建一个处理的线程
-    std::thread video_p(Thread_ProcressVideo, ref(SafeQueue_Read), ref(SafeQueue_Write), ref(finished));
+    std::thread video_p(Thread_ProcressVideo, ref(SafeQueue_Read), ref(SafeQueue_Write), ref(is_read_finish), ref(is_process_finish));
 
     // 创建一个写入视频的线程
-    std::thread video_w(Thread_WriterVideo, ref(writer), ref(SafeQueue_Write), ref(finished));
+    std::thread video_w(Thread_WriterVideo, ref(writer), ref(SafeQueue_Write), ref(is_process_finish));
 
     // 回收线程资源
     for (thread &t : video_readers)

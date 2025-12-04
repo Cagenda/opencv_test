@@ -89,7 +89,7 @@ void Thread_ProcressVideo(SafeQueue<FrameData> &r_queue, SafeQueue<FrameData> &w
         // =========================================================
         while (pipeline.size() < PIPELINE_LIMIT)
         {
-            if (r_queue.empty() | finish)
+            if (r_queue.empty())
             {
                 break;
             }
@@ -116,14 +116,14 @@ void Thread_ProcressVideo(SafeQueue<FrameData> &r_queue, SafeQueue<FrameData> &w
             pipeline.pop();
         }
 
-        // 1. 读线程说完了 (read_finish)
-        // 2. 读队列空了
-        // 3. 流水线里的任务也都回收完
+        // =========================================================
+        // E. 退出判断 (Termination Check)
+        // =========================================================
         if (read_finish && r_queue.empty() && pipeline.empty())
         {
             printf("处理线程全部结束。\n");
 
-            // 【关键】交出接力棒，告诉写线程：我也完了，你可以走了
+            // 【修改点 2】设置处理结束标志，通知写线程
             process_finish = true;
             break;
         }
@@ -131,7 +131,7 @@ void Thread_ProcressVideo(SafeQueue<FrameData> &r_queue, SafeQueue<FrameData> &w
 }
 
 // 3.创建写入视频的函数（消费者）
-void Thread_WriterVideo(cv::VideoWriter &writer, SafeQueue<FrameData> &img_q, bool &finish)
+void Thread_WriterVideo(cv::VideoWriter &writer, SafeQueue<FrameData> &img_q, bool &process_finish)
 {
     // frame_tmp完整地接收从队列中取出的整个数据包（包含帧内容和索引）包含 Mat + index
     // img_tmp用来单独存放从frame_tmp中提取出来的图像帧，以便后续处理
@@ -142,35 +142,33 @@ void Thread_WriterVideo(cv::VideoWriter &writer, SafeQueue<FrameData> &img_q, bo
     while (1)
     {
 
-        // 先判断是否结束（队列为空，且标志位为True）
-        if (finish && img_q.empty())
+        // =========================================================
+        // 【修改点 2】退出条件逻辑
+        // 只有当：处理线程说结束了 (process_finish) && 写队列也没货了
+        // 才是真正的结束
+        // =========================================================
+        if (process_finish && img_q.empty())
         {
-            printf("all finished\n");
+            printf("写线程结束 (All Finished)\n");
             break;
         }
+        if (img_q.empty())
+        {
+            // 如果队列空了但还没 finish，就稍等一下，避免死循环空转
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+            continue;
+        }
+
         // ② 直接阻塞式取数据（队列空了就睡觉）
         img_q.dequeue(frame_tmp);
-        /*每次循环都拿当前时间 end计算从 start 到现在 end 经过了多少毫秒 duration,
-       用来决定是不是“到了该写下一帧的时候”*/
-        auto end = std::chrono::high_resolution_clock::now();
-        auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end - start);
-
-        if (duration.count() < 30)
-        {
-            std::this_thread::sleep_for(std::chrono::milliseconds(30 - duration.count()));
-        }
-
-        start = std::chrono::high_resolution_clock::now(); // 重新记录写入时间起点，为下一次计时做准备。
-        end = std::chrono::high_resolution_clock::now();
-
-        // 写入帧
         img_tmp = frame_tmp.frame;
-        if (!img_tmp.empty()) // 防御性检查确保这一帧不是空图像
+        if (!img_tmp.empty())
         {
-            // 如果队列第一个图片不是空，就写入到VideoWriter这个类里面（对象是writer）
+            // VideoWriter 的 write 本身就是阻塞的（写硬盘IO操作）
+            // 它写多快，我们就跑多快，不再人为限速
             writer.write(img_tmp);
         }
-        // 每写10次循环
+        // 打印进度
         if (frame_tmp.index > 0 && frame_tmp.index % 10 == 0)
         {
             printf("write index %d finished \n", frame_tmp.index);
@@ -254,15 +252,16 @@ int main()
     // 利用容器创建多线程，创建读视频的线程
     int img_index = -1;
     int num_thread = 1;
-    bool finished = false; // 判断读取是否结束
 
-    bool is_process_finish = false; // 2. 处理线程是否结束的标志 (新增这个!)
-    bool is_read_finish = false;    // 1. 读线程是否结束的标志
+    // 标志1：读完了吗？ (给 Reader 改，Process 看)
+    bool is_read_done = false;
+    // 标志2：处理完了吗？ (给 Process 改，Writer 看)
+    bool is_process_done = false;
 
     std::vector<thread> video_readers;
     for (int i = 0; i < num_thread; i++)
     {
-        video_readers.emplace_back(Thread_ReadVideo, ref(cap), ref(SafeQueue_Read), ref(img_index), ref(cap_m), ref(is_read_finish));
+        video_readers.emplace_back(Thread_ReadVideo, ref(cap), ref(SafeQueue_Read), ref(img_index), ref(cap_m), ref(is_read_done));
     }
 
     // 写入视频
@@ -270,10 +269,10 @@ int main()
     cv::VideoWriter writer("/home/orangepi/opencv_test/output.avi", cv::VideoWriter::fourcc('I', '4', '2', '0'), fps, frame_size);
 
     // 创建一个处理的线程
-    std::thread video_p(Thread_ProcressVideo, ref(SafeQueue_Read), ref(SafeQueue_Write), ref(is_read_finish), ref(is_process_finish));
+    std::thread video_p(Thread_ProcressVideo, ref(SafeQueue_Read), ref(SafeQueue_Write), ref(is_read_done), ref(is_process_done));
 
     // 创建一个写入视频的线程
-    std::thread video_w(Thread_WriterVideo, ref(writer), ref(SafeQueue_Write), ref(is_process_finish));
+    std::thread video_w(Thread_WriterVideo, ref(writer), ref(SafeQueue_Write), ref(is_process_done));
 
     // 回收线程资源
     for (thread &t : video_readers)

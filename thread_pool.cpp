@@ -34,7 +34,7 @@ std::future<cv::Mat> ThreadPool::sumbit_task(const cv::Mat &img, int index)
     auto job_func = [img, index]() -> cv::Mat
     {
         // --- 模拟耗时操作 (YOLO推理) ---
-        printf("  [Worker] 开始处理第 %d 帧...\n", index);
+        printf("  [Worker] 开始处理第 %d 帧...（睡眠2s）\n", index);
         std::this_thread::sleep_for(std::chrono::seconds(2));
         cv::Mat res = img.clone(); // 这里的 clone 很重要，保证结果是独立的?????？
         return res;
@@ -43,30 +43,27 @@ std::future<cv::Mat> ThreadPool::sumbit_task(const cv::Mat &img, int index)
 
     // std::make_shared<T>(参数...)
     // std::packaged_task<返回值类型(参数列表)>
-    
+
     // auto task_ptr = std::make_shared<std::packaged_task<cv::Mat()>>(job_func);
     // 2. 直接在栈上创建任务包 (不需要 make_shared)
     std::packaged_task<cv::Mat()> task(job_func);
-//-----获取Future，这一步仅仅只是链接future和promise-----------
-// 3. 拿到取餐票
+    //-----获取Future，这一步仅仅只是链接future和promise-----------
+    // 3. 拿到取餐票
     std::future<cv::Mat> res_future = task.get_future();
 
-// -----------真正的执行任务应该在worker线程---------------------
+    // -----------真正的执行任务应该在worker线程---------------------
     // -----------把task放入队列--------------------------
     {
         // 【核心难点】必须使用 std::move() ！！！
         // 因为 task 是独占的，你必须把它“移”进队列，原来的 task 变量就空了
         std::lock_guard<std::mutex> lock(task_mtx);
-        tasks.push(std::move(task)); 
-
+        tasks.push(std::move(task));
     }
     // 5. 通知
     task_cond.notify_one();
     // 6. 返回票
     return res_future;
 }
-
-
 
 //----------------工作者函数------------------
 void ThreadPool::worker(int id)
@@ -77,7 +74,7 @@ void ThreadPool::worker(int id)
         std::packaged_task<cv::Mat()> current_task;
 
         {
-            //任务时先上锁
+            // 任务时先上锁
             std::unique_lock<std::mutex> lock(task_mtx);
             task_cond.wait(lock, [this]
                            { return (!tasks.empty() || !run); });
@@ -92,14 +89,10 @@ void ThreadPool::worker(int id)
             current_task = std::move(tasks.front());
             tasks.pop();
         }
-        // 接下来是对取出来的任务进行处理
-        //===================
-        printf("worker 正在工作ing\n");
-        std::this_thread::sleep_for(std::chrono::seconds(2));
         //===================
         // 执行任务
         // 运行完后，结果会自动蹦到主线程的 future 里
-        current_task();      
+        current_task();
     }
 }
 

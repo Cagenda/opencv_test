@@ -13,8 +13,7 @@
 using namespace std;
 using namespace cv;
 
-// 定义一个线程池
-ThreadPool gthreadpool(12);
+ThreadPool gthreadpool(12);      // 定义一个线程池，这个线程池中有12个线程
 static int g_frame_start_id = 0; // 用于帧的起始id
 
 // 定义每一帧（也就是每一张的图片）的信息
@@ -55,10 +54,11 @@ void Thread_ReadVideo(VideoCapture &video, SafeQueue<FrameData> &img_queue, int 
         img_index++;
         frame_tmp.index = img_index;
         img_queue.enqueue(frame_tmp); // 安全入队
-        if (img_index > 0 && img_index % 10 == 0)
+        if (img_index >= 0)
         {
             printf("read img_index:%d:\n", img_index);
         }
+        std::this_thread::sleep_for(std::chrono::milliseconds(250));
     }
     finish = true;
     printf("read end:\n");
@@ -94,12 +94,11 @@ void Thread_ProcressVideo(SafeQueue<FrameData> &r_queue, SafeQueue<FrameData> &w
                 break;
             }
             FrameData frame_in;
-            r_queue.dequeue(frame_in); // 取出数据
-                                       // 【关键修改】提交给线程池，拿到 Future原来是 get_result 死等，现在是 submit_task 立刻拿票走人
-            std::future<cv::Mat> fut = gthreadpool.sumbit_task(frame_in.frame, frame_in.index);
+            r_queue.dequeue(frame_in);                                                          // 取出数据，此时frame_in当作是临时存放变量
+                                                                                                // 【关键修改】提交给线程池，拿到 Future（此时代码进入线程池内部）
+            std::future<cv::Mat> fut = gthreadpool.sumbit_task(frame_in.frame, frame_in.index); // 如果pipeline.size小于16，则一直会提交任务，并且执行任务
             // 【关键修改】存入流水线使用 std::move 是因为 future 只能移动不能复制
             pipeline.push({frame_in.index, std::move(fut)});
-            printf("已提交帧: %d\n", frame_in.index);
         }
         // =========================================================
         // D. 收货阶段 (Filling Pipeline)
@@ -108,12 +107,20 @@ void Thread_ProcressVideo(SafeQueue<FrameData> &r_queue, SafeQueue<FrameData> &w
         {
             // 获取队头任务
             PendingTask &front_task = pipeline.front();
+            if (front_task.fut.wait_for(std::chrono::seconds(0)) == std::future_status::ready) // 只有准备好了，才去 get()，这时候是瞬间返回的
+            {
+                cv::Mat res = front_task.fut.get();
+                w_queue.enqueue({res, front_task.index});
+                pipeline.pop();
+            }
+            // 如果没准备好 (status == timeout)，代码直接往下走，
+            // 也就是绕回 while(true) 的开头，重新去执行“阶段 C”进货！
 
-            // 获取结果，但是.get是阻塞，如果后台还没算完，这里死等
-            cv::Mat res = front_task.fut.get();
-            // 传给写队列
-            w_queue.enqueue({res, front_task.index});
-            pipeline.pop();
+            // // 获取结果，但是.get是阻塞，如果后台还没算完，这里死等
+            // cv::Mat res = front_task.fut.get();
+            // // 传给写队列
+            // w_queue.enqueue({res, front_task.index});
+            // pipeline.pop();
         }
 
         // =========================================================
@@ -122,7 +129,6 @@ void Thread_ProcressVideo(SafeQueue<FrameData> &r_queue, SafeQueue<FrameData> &w
         if (read_finish && r_queue.empty() && pipeline.empty())
         {
             printf("处理线程全部结束。\n");
-
             // 【修改点 2】设置处理结束标志，通知写线程
             process_finish = true;
             break;

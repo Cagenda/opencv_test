@@ -7,6 +7,7 @@
 #include <condition_variable>
 #include<atomic>
 #include<thread>
+
 // 1. 包含OpenCV核心功能头文件，定义了  cv::Mat
 #include <opencv2/highgui.hpp>
 #include <future>      // 【新增】核心库：用于支持 future 和 promise

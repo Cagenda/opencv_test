@@ -33,10 +33,25 @@ std::future<cv::Mat> ThreadPool::sumbit_task(const cv::Mat &img, int index)
     // “定义一个名字叫 job_func 的匿名任务。这个任务随身携带了外面的 img 和 index 的副本（背包）。启动这个任务不需要传参（括号是空的）。任务做完后，承诺会吐出一张 cv::Mat 图片（箭头指向返回值）。
     auto job_func = [img, index]() -> cv::Mat
     {
-        // --- 模拟耗时操作 (YOLO推理) ---
-        printf("  [Worker] 开始处理第 %d 帧...（睡眠2s）\n", index);
-        std::this_thread::sleep_for(std::chrono::seconds(2));
-        cv::Mat res = img.clone(); // 这里的 clone 很重要，保证结果是独立的?????？
+        cv::Mat res = img.clone();
+
+        // 【修改点 1】加大循环次数：从 100 改为 10,000,000 (一千万)
+        // 根据你的 CPU 性能，这个数字可能需要调整。太小没反应，太大卡死。
+        int loop_count = 10000000;
+
+        // 【修改点 2】防止编译器优化
+        // volatile 告诉编译器：别动这个变量，每次必须老老实实读写内存
+        volatile double result = 0;
+
+        for (int i = 0; i < loop_count; ++i)
+        {
+            // 做一些复杂的运算，迫使 CPU 的 ALU (算术逻辑单元) 满载
+            result += std::sin(i) * std::cos(i) + std::tan(i);
+        }
+
+        // 这里的打印可以防止 result 之前的计算被完全优化掉（虽然有 volatile 也不怕）
+        // printf("Finished heavy calculation for index %d\n", index);
+
         return res;
     };
     // 用你提供的参数构造一个 T 对象返回一个 shared_ptr<T> 指向这个对象用 job_func 去构造一个 packaged_taskcv::Mat()，然后把这个任务对象用 shared_ptr 管起来
@@ -57,7 +72,8 @@ std::future<cv::Mat> ThreadPool::sumbit_task(const cv::Mat &img, int index)
         // 【核心难点】必须使用 std::move() ！！！
         // 因为 task 是独占的，你必须把它“移”进队列，原来的 task 变量就空了
         std::lock_guard<std::mutex> lock(task_mtx);
-        tasks.push(std::move(task));
+        tasks.push(std::move(task));//将task(job_func)放进了tasks的队列中，，等待线程认领
+        printf("已经提交任务给线程池中的任务队列%d\n", index);
     }
     // 5. 通知
     task_cond.notify_one();
@@ -72,7 +88,6 @@ void ThreadPool::worker(int id)
     {
         // 定义一个空的任务包用来接货
         std::packaged_task<cv::Mat()> current_task;
-
         {
             // 任务时先上锁
             std::unique_lock<std::mutex> lock(task_mtx);
@@ -83,9 +98,7 @@ void ThreadPool::worker(int id)
                 std::cout << "worker %d 下班" << id << std::endl;
                 return; // break也行吗？
             }
-
             // 如果任务队列不为空【核心难点】必须使用 std::move() ！！！把队列头的任务“移”到 current_task 变量里
-
             current_task = std::move(tasks.front());
             tasks.pop();
         }

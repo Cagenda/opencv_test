@@ -8,8 +8,10 @@
 #include <mutex>
 #include <map>
 #include "yolov5s.h"
+#include "post_process.h"
 #include "thread_pool.h"
 // 2. 包含图像I/O和GUI函数头文件， 定义了 imread, imshow, waitKey#include <iostream>
+
 using namespace std;
 using namespace cv;
 
@@ -249,6 +251,9 @@ int main()
     {
         perror("img_tmp failed");
     }
+    post_process();
+    while (1)
+        ;//插入断点
     Yolov5s yolov5s("/home/orangepi/opencv_test/model/yolov5s.rknn", 0);
     yolov5s.inference_image(img_tmp);
 

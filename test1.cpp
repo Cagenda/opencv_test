@@ -89,6 +89,7 @@ void Thread_ProcressVideo(SafeQueue<FrameData> &r_queue, SafeQueue<FrameData> &w
         // C. 发货阶段 (Filling Pipeline)
         // 只要流水线没满，且有数据，就一直往线程池里塞
         // =========================================================
+
         while (pipeline.size() < PIPELINE_LIMIT)
         {
             if (r_queue.empty())
@@ -252,11 +253,11 @@ int main()
         perror("img_tmp failed");
     }
     post_process();
-    while (1)
-        ;//插入断点
+
     Yolov5s yolov5s("/home/orangepi/opencv_test/model/yolov5s.rknn", 0);
     yolov5s.inference_image(img_tmp);
-
+    while (1)
+        ; // 插入断点
     // 定义锁(全局)，专门用于在读取原视频的时候，锁住，防止多个线程读取原视频
     mutex cap_m;
 

@@ -7,6 +7,8 @@
 
 #define LABEL_PATH "/home/orangepi/opencv_test/model/coco_80_labels_list.txt"
 #define OBJ_CLASS_NUM 80
-#endif
-
 int post_process();
+
+
+
+#endif

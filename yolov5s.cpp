@@ -9,13 +9,15 @@ static void print_tensor_attr(rknn_tensor_attr *attr)
         shape_str = shape_str + " " + current_str;
     }
     // 打印tensor属性
-    printf("index : %d, name : %s, n_dims = %d, dims = %s, size = %d, fmt = %d\n",
+    printf("index : %d, name : %s, n_dims = %d, dims = %s, size = %d, fmt = %d\n,scale=%f\n,zp=%d\n",
            attr->index,
            attr->name,
            attr->n_dims,
            shape_str.c_str(),
            attr->size,
-           attr->fmt); // size：准备这么大的内存来装这个tensor
+           attr->fmt,
+           attr->scale,
+           attr->zp); // size：准备这么大的内存来装这个tensor,scale是缩放因子，zp 是零点 (Zero Point)。这是反量化公式中的 zp
 }
 
 Yolov5s::Yolov5s(const char *model_path, int npu_index)
@@ -56,16 +58,17 @@ Yolov5s::Yolov5s(const char *model_path, int npu_index)
         /* code */
     }
 
-    //==================以下内容是将查询模型的输入输出属性=============================================
+    //==================以下内容是将查询模型的输入输出属性========
 
     // 1.查询SDK_Version（不知道用来做什么）把SDK_Version信息存放在version中
     rknn_query(ctx, RKNN_QUERY_SDK_VERSION, &this->version, sizeof(this->version));
     printf("sdk version :%s,drv version:%s\n", version.api_version, version.drv_version);
+
     // 2.查询tensor io_num,注意io_num是一个结构体
     rknn_query(ctx, RKNN_QUERY_IN_OUT_NUM, &this->io_num, sizeof(this->io_num));
     printf("input num :%d\n output num :%d\n", this->io_num.n_input, this->io_num.n_output);
 
-    // 3.
+    // 3.（获取 input_attr 和 output_attr)
     input_attr.resize(io_num.n_input);
     output_attr.resize(io_num.n_output);
     for (int i = 0; i < io_num.n_input; i++)
@@ -186,7 +189,6 @@ int Yolov5s::inference_image(const cv::Mat &orign_img)
     cv::Mat img_rga(resize_height, resize_width, CV_8UC3, dst_buf);
     cv::imwrite("img_rga.jpg", img_rga);
 
-    
     //===============================释放空间==================================
     if (src_handle)
     {

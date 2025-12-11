@@ -27,7 +27,7 @@ Yolov5s::Yolov5s(const char *model_path, int npu_index)
     int ret; // 接收函数的返回值
     this->model_data_size = 0;
     this->model_data = load_model(model_path, &this->model_data_size); // 1.记录模型的数据和模型数据大小
-    ret = rknn_init(&this->ctx, model_data, model_data_size, 0, NULL); // 2.把模型加载到 NPU
+    ret = rknn_init(&this->ctx, model_data, model_data_size, 0, NULL); // 2.把yolo模型加载到 NPU(此时还没有跑模型)
     if (ret < 0)
     {
         printf("model init failde \n");
@@ -152,12 +152,12 @@ int Yolov5s::inference_image(const cv::Mat &orign_img)
     // printf("Opencv Process time:%ld   ms \n", duration.count());
     // cv::imwrite("img_cv_intera.jpg", img_resize);
 
-    // RGA进行图像处理
+    // -=========RGA进行图像处理=======================
     // 1.开辟内存空间
     char *src_buf, *src_cvt_buf, *dst_buf;
     src_buf = (char *)malloc(img_weidth * img_height * img_channel);
     src_cvt_buf = (char *)malloc(img_weidth * img_height * img_channel);
-    dst_buf = (char *)malloc(resize_width * resize_height * resize_channel);
+    dst_buf = (char *)malloc(resize_width * resize_height * resize_channel); // 预处理后的像素数据缓冲区：一个连续的内存块，可以叫它 dst_buf
 
     // 2.地址初始化
     memcpy(src_buf, orign_img.data, img_weidth * img_height * img_channel);
@@ -188,8 +188,10 @@ int Yolov5s::inference_image(const cv::Mat &orign_img)
     printf("RGA Process time:%ld   ms \n", duration.count());
     cv::Mat img_rga(resize_height, resize_width, CV_8UC3, dst_buf);
     cv::imwrite("img_rga.jpg", img_rga);
+    //=========================推理=============
+    rknn_input inputs[1]; // 定义一个长度为 1的rknn_input数组。通过rknn_query查询到的NPU的输入维度为1
 
-    //===============================释放空间==================================
+    //===============================释放空间=====================
     if (src_handle)
     {
         releasebuffer_handle(src_handle);

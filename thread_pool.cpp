@@ -72,7 +72,7 @@ std::future<cv::Mat> ThreadPool::sumbit_task(const cv::Mat &img, int index)
         // 【核心难点】必须使用 std::move() ！！！
         // 因为 task 是独占的，你必须把它“移”进队列，原来的 task 变量就空了
         std::lock_guard<std::mutex> lock(task_mtx);
-        tasks.push(std::move(task));//将task(job_func)放进了tasks的队列中，，等待线程认领
+        tasks.push(std::move(task)); // 将task(job_func)放进了tasks的队列中，，等待线程认领
         printf("已经提交任务给线程池中的任务队列%d\n", index);
     }
     // 5. 通知

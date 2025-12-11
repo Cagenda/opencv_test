@@ -1,4 +1,11 @@
 #include "post_process.h"
+struct Probarry
+{
+    float conf;
+    int index;
+};
+std::vector<Probarry> prob;
+
 std::vector<std::string> labels_vector; // 装labels的容器
 int readLines(const char *filepath, std::vector<std::string> &labels_vector, int maxlines)
 {
@@ -36,17 +43,39 @@ static float deqnt_int8_to_f32(int8_t int_num,int32_t zp,float scale)//为什么
     return float_num;
 }
 
+//快速排序
+static void sort_descending(std::vector<Probarry> &prob)
+{
+    std::sort(prob.begin(), prob.end(),
+              [](const Probarry &a, const Probarry &b)
+              {
+                  return a.conf > b.conf;
+              }
+    );
+}
+//
+int process()
+{
+    
+}
+
+
+//
 int post_process()
 {
+    static int init = -1;
+    if(init==-1)
+    {
     loadlabelname(LABEL_PATH, labels_vector, OBJ_CLASS_NUM);
     // 遍历vector容器
     for (std::string &s : labels_vector)
     {
         std::cout << "label name: " << s << std::endl;
     }
+    init = 0;
+    // deqnt_int8_to_f32();  
+    }
 
-    int8_t num = 80;
-    // deqnt_int8_to_f32();
 
     return 0;
 }

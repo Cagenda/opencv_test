@@ -58,9 +58,9 @@ Yolov5s::Yolov5s(const char *model_path, int npu_index)
         /* code */
     }
 
-    //==================以下内容是将查询模型的输入输出属性========
+    //========以下内容是将查询模型的输入输出属性========
 
-    // 1.查询SDK_Version（不知道用来做什么）把SDK_Version信息存放在version中
+    // 1.查询SDK_Versisn（不知道用来做什么）把SDK_Version信息存放在version中
     rknn_query(ctx, RKNN_QUERY_SDK_VERSION, &this->version, sizeof(this->version));
     printf("sdk version :%s,drv version:%s\n", version.api_version, version.drv_version);
 
@@ -69,6 +69,8 @@ Yolov5s::Yolov5s(const char *model_path, int npu_index)
     printf("input num :%d\n output num :%d\n", this->io_num.n_input, this->io_num.n_output);
 
     // 3.（获取 input_attr 和 output_attr)
+    // io_num和其关系：io_num 告诉你“有多少个”，而 input_attr（或 inputs 数组）是用来“装这这么多东西”的容器。
+    // 如果 io_num.n_input 的值为 2，那么 input_attr 这个容器（在你的代码中是一个 std::vector）里一定会有两个对应的元素。
     input_attr.resize(io_num.n_input);
     output_attr.resize(io_num.n_output);
     for (int i = 0; i < io_num.n_input; i++)
@@ -188,8 +190,32 @@ int Yolov5s::inference_image(const cv::Mat &orign_img)
     printf("RGA Process time:%ld   ms \n", duration.count());
     cv::Mat img_rga(resize_height, resize_width, CV_8UC3, dst_buf);
     cv::imwrite("img_rga.jpg", img_rga);
-    //=========================推理=============
-    rknn_input inputs[1]; // 定义一个长度为 1的rknn_input数组。通过rknn_query查询到的NPU的输入维度为1
+
+    //=========================推理================
+
+    int inputs_num = io_num.n_input;   // 获取rknn需要的输入节点数量。
+    int outputs_num = io_num.n_output; // 获取rknn需要的输出节点数量。
+    rknn_input inputs[inputs_num];     // 元素类型rknn_input。这是一个结构体,用来描述每一个输入张量的详细信息
+    memset(inputs, 0, sizeof(inputs)); // 清空数组
+
+    // =================填充第0个输入的信息=======
+    inputs[0].index = 0;                                            //  1. 设置索引
+    inputs[0].type = RKNN_TENSOR_UINT8;                             // 2. 设置数据类型
+    inputs[0].size = resize_width * resize_height * resize_channel; // 3. 设置数据大小
+    inputs[0].fmt = RKNN_TENSOR_NHWC;                               // 4. 设置数据排列格式（核心难点）RGA处理后的图像为NHWC，但是yolo需要NCHW
+    inputs[0].pass_through = 0;                                     // 5. 自动转换从NHWC--->NHCW
+    inputs[0].buf = dst_buf;                                        // 6. 挂载数据指针
+    rknn_inputs_set(ctx, inputs_num, inputs);                       // 调用 rknn_inputs_set将数据拷贝到 NPU 输入内存
+    //=================填充第输出的信息==============
+    rknn_output outputs[outputs_num];
+    memset(outputs,0,sizeof(outputs));
+    //循环填入输出信息
+    for (int i = 0; i < outputs_num; i++)
+    {
+        outputs[i].want_float = 1;          // 【关键】设为 0，不让驱动帮你把结果转成 float。原因：减少数据传输量（核心原因）int8 数据占用 1 个字节，而 float32 占用 4 个字节
+    }
+    //=================rknn_run==============
+
 
     //===============================释放空间=====================
     if (src_handle)

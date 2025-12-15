@@ -192,7 +192,7 @@ int Yolov5s::inference_image(const cv::Mat &orign_img)
     cv::imwrite("img_rga.jpg", img_rga);
 
     //=========================推理================
-
+    auto start = std::chrono::high_resolution_clock::now();
     int inputs_num = io_num.n_input;   // 获取rknn需要的输入节点数量。
     int outputs_num = io_num.n_output; // 获取rknn需要的输出节点数量。
     rknn_input inputs[inputs_num];     // 元素类型rknn_input。这是一个结构体,用来描述每一个输入张量的详细信息
@@ -208,16 +208,24 @@ int Yolov5s::inference_image(const cv::Mat &orign_img)
     rknn_inputs_set(ctx, inputs_num, inputs);                       // 调用 rknn_inputs_set将数据拷贝到 NPU 输入内存
     //=================填充第输出的信息==============
     rknn_output outputs[outputs_num];
-    memset(outputs,0,sizeof(outputs));
-    //循环填入输出信息
+    memset(outputs, 0, sizeof(outputs));
+    // 循环填入输出信息
     for (int i = 0; i < outputs_num; i++)
     {
-        outputs[i].want_float = 1;          // 【关键】设为 0，不让驱动帮你把结果转成 float。原因：减少数据传输量（核心原因）int8 数据占用 1 个字节，而 float32 占用 4 个字节
+        outputs[i].want_float = 1; // 【关键】设为 0，不让驱动帮你把结果转成 float。原因：减少数据传输量（核心原因）int8 数据占用 1 个字节，而 float32 占用 4 个字节
     }
     //=================rknn_run==============
-
-
-    //===============================释放空间=====================
+    printf("模型开始推理\n");
+    ret = rknn_run(ctx, NULL);
+    if (ret == 0)
+    {
+        printf("模型推理成功!\n");
+    }
+    rknn_outputs_get(ctx, outputs_num, outputs, NULL);
+    auto end = std::chrono::high_resolution_clock::now();
+    auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end - start);
+    printf("模型推理用时:%ld   ms \n", duration.count());
+    //==================释放空间=====================
     if (src_handle)
     {
         releasebuffer_handle(src_handle);

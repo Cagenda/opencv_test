@@ -1,4 +1,14 @@
 #include "post_process.h"
+// YOLOv5s 默认锚框尺寸 (对应 640x640 模型)这里的顺序必须和输出层一一对应
+// stride 8 (P3) -> 80x80 特征图
+// stride 16 (P4) -> 40x40 特征图
+// stride 32 (P5) -> 20x20 特征图
+const int anchors[3][6] = {
+    {10, 13, 16, 30, 33, 23},     // 第一层 (Index 0)
+    {30, 61, 62, 45, 59, 119},    // 第二层 (Index 1)
+    {116, 90, 156, 198, 373, 326} // 第三层 (Index 2)
+};
+
 struct Probarry
 {
     float conf;
@@ -34,48 +44,198 @@ int loadlabelname(const char *filepath, std::vector<std::string> &labels_vector,
     return 0;
 }
 
-
-//=================反量化与sigmod===================
-//反量化
-static float deqnt_int8_to_f32(int8_t int_num,int32_t zp,float scale)//为什么要加上fstatic，在这里zp和scale是在yolo.cpp中输出信息打印出来了
-{
-    float float_num = (float)(int_num-zp)*scale;
-    return float_num;
-}
-
-//快速排序
+// =========================================快速排序===================================
 static void sort_descending(std::vector<Probarry> &prob)
 {
     std::sort(prob.begin(), prob.end(),
               [](const Probarry &a, const Probarry &b)
               {
                   return a.conf > b.conf;
-              }
-    );
+              });
 }
-//
-int process()
+
+//==================================================反量化与sigmod===================
+// ===========================反量化
+static float deqnt_int8_to_f32(int8_t int_num, int32_t zp, float scale) // 为什么要加上static，在这里zp和scale是在yolo.cpp中输出信息打印出来了
 {
-    
+    float float_num = (float)(int_num - zp) * scale;
+    return float_num;
 }
 
+//============================激活函数=======================
+static float sigmod(float x)
+{
+    return 1.0f / (1.0f + std::exp(-x));
+}
 
-//
+//==============从每一个head的buf中提取中每一个格子的（anchor）框的信息
+static inline float get_val_formhead(int8_t *data, int c, int h, int w, int H, int W, float scale, int32_t zp)
+{
+    int idx = (c * H + h) * W + w; // NCHW 下标
+    int8_t q = data[idx];
+    return deqnt_int8_to_f32(q, zp, scale); // 用你写好的反量化函数
+}
+
+//==============================求IOU=======================
+static float IoU(const Detection &a, const Detection &b)
+{
+    float xx1 = std::max(a.x1, b.x1);
+    float yy1 = std::max(a.y1, b.y1);
+    float xx2 = std::min(a.x2, b.x2);
+    float yy2 = std::min(a.y2, b.y2);
+
+    float w = std::max(0.0f, xx2 - xx1);
+    float h = std::max(0.0f, yy2 - yy1);
+    float inter = w * h;
+
+    float area_a = (a.x2 - a.x1) * (a.y2 - a.y1);
+    float area_b = (b.x2 - b.x1) * (b.y2 - b.y1);
+    float uni = area_a + area_b - inter;
+
+    if (uni <= 0.0f)
+    {
+        return 0.0f;
+    }
+    return inter / uni;
+}
+
+//===========================NMS函数=========================
+static void nms_per_class(std::vector<Detection> &dets, float iou_thresh)
+{
+    std::vector<Detection> result; // 只放最后留下来的框
+
+    if (dets.empty())
+        return;
+    // 1. 按 score 从大到小排序
+    std::sort(dets.begin(), dets.end(),
+              [](const Detection &a, const Detection &b)
+              {
+                  return a.score > b.score;
+              });
+    std::vector<bool> removed(dets.size(), false);
+    for (size_t i = 0; i < dets.size(); i++)
+    {
+        if (removed[i])
+            continue;
+        result.push_back(dets[i]);
+
+        for (size_t j = i + 1; j < dets.size(); ++j)
+        {
+            if (removed[j])
+                continue;
+            if (dets[i].class_id != dets[j].class_id)
+                continue; // 只对同一类做 NMS
+
+            float iou = IoU(dets[i], dets[j]);
+            if (iou > iou_thresh)
+            {
+                removed[j] = true; // j 被 i 干掉
+            }
+        }
+    }
+    dets.swap(result);
+}
+
+// RGA 负责把摄像头拍的 1920x1080 照片 缩放 (Resize) 成 640x640。
+
+// NPU 吃进 640x640 进行计算。
+
+// Post Process 拿到结果后，再把坐标从 640x640 映射 (Map) 回 1920x1080，这样你才能在原图上画准框。
+
 int post_process()
 {
     static int init = -1;
-    if(init==-1)
+    if (init == -1)
     {
-    loadlabelname(LABEL_PATH, labels_vector, OBJ_CLASS_NUM);
-    // 遍历vector容器
-    for (std::string &s : labels_vector)
-    {
-        std::cout << "label name: " << s << std::endl;
+        loadlabelname(LABEL_PATH, labels_vector, OBJ_CLASS_NUM);
+        // 遍历vector容器
+        for (std::string &s : labels_vector)
+        {
+            std::cout << "label name: " << s << std::endl;
+        }
+        init = 0;
+        // deqnt_int8_to_f32();
     }
-    init = 0;
-    // deqnt_int8_to_f32();  
-    }
-
 
     return 0;
+}
+
+//=========================yOLOv5后处理入口=====================
+std::vector<Detection> yolov5_post_process(
+    const rknn_output *outputs,                     // rknn_outputs_get 得到的输出数组
+    const std::vector<rknn_tensor_attr> &out_attrs, // ✅ 改成引用 vector 对应的 tensor 属性数组（包含 scale / zp / dims）
+    int out_num,                                    // 输出个数=3
+    int model_w,                                    // yolo模型输入640
+    int model_h,                                    // 640
+    int img_w,                                      // 原图宽
+    int img_h,                                      // 原图高
+    float conf_thres,                               // 例如 0.25
+    float nms_thres                                 // 例如 0.45
+)
+{
+    for (size_t i = 0; i < out_num; i++)
+    {
+        const rknn_tensor_attr &attr = out_attrs[i]; // 先获取一下，tesnor的属性
+        const rknn_output &out = outputs[i];
+        /*rknn_output 这个名字本身是一个“结构体类型”；
+        你写 rknn_output outputs[3]; 时，才创建了一个“长度为 3 的 rknn_output 数组”。
+        在函数参数里 const rknn_output* outputs 是“指向这个数组首元素的指针”，你在里面用 outputs[n] 来访问第 n 个 head 的输出。*/
+
+        int8_t *data = static_cast<int8_t *>(out.buf); // 当前 head 的 int8 原始数据指针
+        // out.buf 里装的是：这个 head 上 所有格子、所有通道 的数据。
+
+        int C = attr.dims[1]; // 255
+        int H = attr.dims[2]; // 经过NPU处理后，图像的纵轴有多少网格（格子数）
+        int W = attr.dims[3]; ////经过NPU处理后，图像的横轴有多少网格
+        float scale = attr.scale;
+        float zp = attr.zp;
+
+        float stride_x = (float)model_w / W; // 一个网格的长度
+        float stride_y = (float)model_h / H; // 一个网格宽度
+
+        // ===== 遍历当前 head 的所有网格 (H, W) 和 3 个 anchor =====
+        for (size_t h = 0; h < H; h++)
+        {
+            for (size_t w = 0; w < W; w++)
+            {
+                for (size_t a = 0; a < 3; a++) // 每个格子有 3 个 anchor：a = 0,1,2
+                {
+
+                    // 针对当前 (h,w,a) 的“一个框”去 data 里取 85 个通道的值
+                    // ==== 1. 计算这个 anchor 在 C 维上的起始通道号 ====
+                    // 每个 anchor 占多少个通道：4(bbox) + 1(obj) + num_classes
+                    const int num_classes = 80;                // 你的模型类别数（COCO 就是 80）
+                    const int anchor_stride = num_classes + 5; // 85
+
+                    int c_base = static_cast<int>(a) * anchor_stride;
+
+                    // ==== 2. 这个 anchor 的 tx/ty/tw/th/obj 对应的通道号 ====
+                    int c_tx = c_base + 0;
+                    int c_ty = c_base + 1;
+                    int c_tw = c_base + 2;
+                    int c_th = c_base + 3;
+                    int c_obj = c_base + 4;
+
+                    // ==== 3. 从 (c, h, w) 取出这 5 个值，并反量化成 float ====
+                    float tx_raw = get_val_formhead(data, c_tx, h, w, H, W, scale, zp);
+                    float ty_raw = get_val_formhead(data, c_ty, h, w, H, W, scale, zp);
+                    float tw_raw = get_val_formhead(data, c_tw, h, w, H, W, scale, zp);
+                    float th_raw = get_val_formhead(data, c_th, h, w, H, W, scale, zp);
+                    float obj_raw = get_val_formhead(data, c_obj, h, w, H, W, scale, zp);
+                    // ==== 4. 对 obj 做一次 sigmoid，把它变成 [0,1] 概率 ====
+                    float obj = sigmod(obj_raw); // 这里调用你之前写好的激活函数
+
+                    // 如果 obj 非常小，后面大概率都被丢掉，可以预筛选（可选）
+                    if (obj < 1e-3f)
+                    {
+                        continue; // 这一个 anchor 直接跳过，处理下一个 a
+                    }
+
+                    // 5. 遍历类别通道，找到“最可能的那个类别”
+                }
+
+                /* code */
+            }
+        }
+    }
 }

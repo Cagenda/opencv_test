@@ -123,9 +123,10 @@ Yolov5s::~Yolov5s()
         free(model_data);
     }
 }
-//======================================图像根据模型输入输出信息进行预处理=============================
+
 int Yolov5s::inference_image(const cv::Mat &orign_img)
 {
+//======================================图像根据模型输入输出信息进行预处理=============================
     int ret = 0;
     img_weidth = orign_img.cols;
     img_height = orign_img.rows;
@@ -191,8 +192,8 @@ int Yolov5s::inference_image(const cv::Mat &orign_img)
     cv::Mat img_rga(resize_height, resize_width, CV_8UC3, dst_buf);
     cv::imwrite("img_rga.jpg", img_rga);
 
-    //=========================推理================
-    auto start = std::chrono::high_resolution_clock::now();
+//======================================推理=======================================
+    auto start2 = std::chrono::high_resolution_clock::now();
     int inputs_num = io_num.n_input;   // 获取rknn需要的输入节点数量。
     int outputs_num = io_num.n_output; // 获取rknn需要的输出节点数量。
     rknn_input inputs[inputs_num];     // 元素类型rknn_input。这是一个结构体,用来描述每一个输入张量的详细信息
@@ -212,7 +213,7 @@ int Yolov5s::inference_image(const cv::Mat &orign_img)
     // 循环填入输出信息
     for (int i = 0; i < outputs_num; i++)
     {
-        outputs[i].want_float = 1; // 【关键】设为 0，不让驱动帮你把结果转成 float。原因：减少数据传输量（核心原因）int8 数据占用 1 个字节，而 float32 占用 4 个字节
+        outputs[i].want_float = 0; // 【关键】设为 0，不让驱动帮你把结果转成 float。原因：减少数据传输量（核心原因）int8 数据占用 1 个字节，而 float32 占用 4 个字节
     }
     //=================rknn_run==============
     printf("模型开始推理\n");
@@ -222,9 +223,22 @@ int Yolov5s::inference_image(const cv::Mat &orign_img)
         printf("模型推理成功!\n");
     }
     rknn_outputs_get(ctx, outputs_num, outputs, NULL);
-    auto end = std::chrono::high_resolution_clock::now();
-    auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end - start);
-    printf("模型推理用时:%ld   ms \n", duration.count());
+    auto end2 = std::chrono::high_resolution_clock::now();
+    auto duration2 = std::chrono::duration_cast<std::chrono::milliseconds>(end2 - start2);
+    printf("模型推理用时:%ld   ms \n", duration2.count());
+
+// 假设你有 output_attr[3] 保存了每个输出的 rknn_tensor_attr
+// model_w / model_h 是 640，img 是原始 cv::Mat
+std::vector<Detection> dets = yolov5_post_process(
+    outputs,
+    output_attr,          // &output_attr[0]
+    outputs_num,
+    640, 640,             // model_w, model_h
+    orign_img.cols, orign_img.rows,   // img_w, img_h
+    0.25f, 0.45f          // conf阈值 / NMS阈值，你可以先用这对
+);
+
+
     //==================释放空间=====================
     if (src_handle)
     {

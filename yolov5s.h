@@ -10,14 +10,13 @@
 #include <opencv2/imgproc.hpp>
 // 1. 包含OpenCV核心功能头文件，定义了  cv::Mat
 #include <opencv2/highgui.hpp>
-
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <dlfcn.h>
 #include <sys/time.h>
 #include <iostream>
-
+#include "post_process.h"
 #include "im2d.h"
 #include "rga.h"
 
@@ -44,8 +43,8 @@ public:
     int img_weidth;
     int img_channel;
 
-    //==========记得补充注释
-    int inference_image(const cv::Mat &orign_img);
+// 【修改点1】返回值改为 cv::Mat，因为我们要把画了框的图传给写视频线程
+    int  inference_image(const cv::Mat &orign_img);
 
     unsigned char *load_data(FILE *fp, size_t offset, size_t sz);
 

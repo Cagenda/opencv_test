@@ -254,8 +254,11 @@ int main()
     }
     post_process();
 
+    // 测试图像
+    char img_name[] = "/home/orangepi/opencv_test/person.jpg";
+    cv::Mat img_tmp2 = cv::imread(img_name, IMREAD_COLOR);
     Yolov5s yolov5s("/home/orangepi/opencv_test/model/yolov5s.rknn", 0);
-    yolov5s.inference_image(img_tmp);
+    yolov5s.inference_image(img_tmp2);
     while (1)
         ; // 插入断点
     // 定义锁(全局)，专门用于在读取原视频的时候，锁住，防止多个线程读取原视频

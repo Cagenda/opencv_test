@@ -216,7 +216,7 @@ std::vector<Detection> yolov5_post_process(
                     int c_th = c_base + 3;
                     int c_obj = c_base + 4;
 
-                    // ==== 3. 从 (c, h, w) 取出这 5 个值，并反量化成 float ====
+                    // ==== 3. 从data中 (c, h, w) 取出这 5 个值，并反量化成 float（） ====
                     float tx_raw = get_val_formhead(data, c_tx, h, w, H, W, scale, zp);
                     float ty_raw = get_val_formhead(data, c_ty, h, w, H, W, scale, zp);
                     float tw_raw = get_val_formhead(data, c_tw, h, w, H, W, scale, zp);
@@ -224,7 +224,6 @@ std::vector<Detection> yolov5_post_process(
                     float obj_raw = get_val_formhead(data, c_obj, h, w, H, W, scale, zp);
                     // ==== 4. 对 obj 做一次 sigmoid，把它变成 [0,1] 概率 ====
                     float obj = sigmod(obj_raw); // 这里调用你之前写好的激活函数
-
                     // 如果 obj 非常小，后面大概率都被丢掉，可以预筛选（可选）
                     if (obj < 1e-3f)
                     {
@@ -232,6 +231,27 @@ std::vector<Detection> yolov5_post_process(
                     }
 
                     // 5. 遍历类别通道，找到“最可能的那个类别”
+                    float best_cls_prob = 0.0f; // 记录当前 anchor 上最大的类别概率
+                    int best_cls_id = -1;       // 对应的类别 ID
+
+                    for (int cls = 0; cls < num_classes; ++cls)
+                    {
+                        // 这个类别在 C 维上的通道号：
+                        // 前面 5 个是 tx,ty,tw,th,obj，所以类别从 c_base + 5 开始往后排
+                        int c_cls = c_base + 5 + cls; // c_cls是类别编号概率值（每一个anchor中的后面80个类别）
+
+                        // 取出这个 (c_cls, h, w) 位置的 raw 值（先反量化）
+                        float cls_raw = get_val_formhead(data, c_cls, h, w, H, W, scale, zp);
+                        // 对类别做一次 sigmoid，把它变成 [0,1] 概率
+                        float cls_prob = sigmod(cls_raw); // 这里用你自己的激活函数
+
+                        // 更新“最可能的那个类别”
+                        if (cls_prob > best_cls_prob)
+                        {
+                            best_cls_prob = cls_prob;
+                            best_cls_id = cls;
+                        }
+                    }
                 }
 
                 /* code */

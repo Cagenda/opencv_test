@@ -14,7 +14,7 @@
 #define OBJ_CLASS_NUM 80
 
 
-std::vector<std::string> labels_vector; // 这一行是“真正的定义”，只在这里写一次
+extern std::vector<std::string> labels_vector; // 这一行是“真正的定义”，只在这里写一次
 // ==================================定义检测结果结构体===============
 
 // ---------------- 检测结果结构体 ,也就是检测框----------------

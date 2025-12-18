@@ -16,7 +16,6 @@ struct Probarry
 };
 std::vector<Probarry> prob;
 
-std::vector<std::string> labels_vector; // 装labels的容器
 int readLines(const char *filepath, std::vector<std::string> &labels_vector, int maxlines)
 {
     std::ifstream file(filepath);
@@ -191,7 +190,7 @@ std::vector<Detection> yolov5_post_process(
         int H = attr.dims[2]; // 经过NPU处理后，图像的纵轴有多少网格（格子数）
         int W = attr.dims[3]; // 经过NPU处理后，图像的横轴有多少网格
         float scale = attr.scale;
-        float zp = attr.zp;
+        int32_t zp = attr.zp;
 
         float stride_x = (float)model_w / W; // 一个网格的长度
         float stride_y = (float)model_h / H; // 一个网格宽度
@@ -277,9 +276,9 @@ std::vector<Detection> yolov5_post_process(
                     float y_center = (sigmod(ty_raw) * 2.0f - 0.5f + h) * stride_y;
 
                     // 2. 解码宽高，需要用到这个 head 对应的 anchor 尺寸
-                    //    先假设你已经有当前 head 的 anchor 数组：anchors[3][2] = { {aw0, ah0}, {aw1, ah1}, {aw2, ah2} };
-                    float aw = anchors[a][0]; // 这个 anchor 的基准宽度（在 640 尺度下）
-                    float ah = anchors[a][1]; // 这个 anchor 的基准高度
+                    // ✅ 建议改成：
+                    float aw = static_cast<float>(anchors[i][2 * a + 0]);
+                    float ah = static_cast<float>(anchors[i][2 * a + 1]);
 
                     float tw_act = sigmod(tw_raw);
                     float th_act = sigmod(th_raw);

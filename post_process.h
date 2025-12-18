@@ -13,6 +13,8 @@
 #define LABEL_PATH "/home/orangepi/opencv_test/model/coco_80_labels_list.txt"
 #define OBJ_CLASS_NUM 80
 
+
+std::vector<std::string> labels_vector; // 这一行是“真正的定义”，只在这里写一次
 // ==================================定义检测结果结构体===============
 
 // ---------------- 检测结果结构体 ,也就是检测框----------------
@@ -22,6 +24,7 @@ struct Detection
     float score;
     float x1, y1, x2, y2; // 在原图坐标系里的左上角(x1,y1) 右下角(x2,y2)
 };
+int post_process();
 // ---------------- 真正的 YOLOv5 后处理入口 ----------------
 // 注意：这里假定 outputs 里的 buf 现在是 int8_t*（因为 want_float = 0）
 //       函数内部会根据 out_attrs[i].scale / zp 做反量化

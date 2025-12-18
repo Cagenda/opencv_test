@@ -44,7 +44,7 @@ public:
     int img_channel;
 
 // 【修改点1】返回值改为 cv::Mat，因为我们要把画了框的图传给写视频线程
-    int  inference_image(const cv::Mat &orign_img);
+    int  inference_image(const cv::Mat &orign_img,std::vector<Detection> &dets);
 
     unsigned char *load_data(FILE *fp, size_t offset, size_t sz);
 

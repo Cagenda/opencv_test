@@ -124,9 +124,9 @@ Yolov5s::~Yolov5s()
     }
 }
 
-int Yolov5s::inference_image(const cv::Mat &orign_img)
+int Yolov5s::inference_image(const cv::Mat &orign_img, std::vector<Detection> &dets)
 {
-//======================================图像根据模型输入输出信息进行预处理=============================
+    //======================================图像根据模型输入输出信息进行预处理=============================
     int ret = 0;
     img_weidth = orign_img.cols;
     img_height = orign_img.rows;
@@ -192,7 +192,7 @@ int Yolov5s::inference_image(const cv::Mat &orign_img)
     cv::Mat img_rga(resize_height, resize_width, CV_8UC3, dst_buf);
     cv::imwrite("img_rga.jpg", img_rga);
 
-//======================================推理=======================================
+    //======================================推理=======================================
     auto start2 = std::chrono::high_resolution_clock::now();
     int inputs_num = io_num.n_input;   // 获取rknn需要的输入节点数量。
     int outputs_num = io_num.n_output; // 获取rknn需要的输出节点数量。
@@ -217,7 +217,7 @@ int Yolov5s::inference_image(const cv::Mat &orign_img)
     }
     //=================rknn_run==============
     printf("模型开始推理\n");
-    ret = rknn_run(ctx, NULL);
+    ret = rknn_run(ctx, NULL); // 推理核心函数
     if (ret == 0)
     {
         printf("模型推理成功!\n");
@@ -227,19 +227,17 @@ int Yolov5s::inference_image(const cv::Mat &orign_img)
     auto duration2 = std::chrono::duration_cast<std::chrono::milliseconds>(end2 - start2);
     printf("模型推理用时:%ld   ms \n", duration2.count());
 
-// 假设你有 output_attr[3] 保存了每个输出的 rknn_tensor_attr
-// model_w / model_h 是 640，img 是原始 cv::Mat
-std::vector<Detection> dets = yolov5_post_process(
-    outputs,
-    output_attr,          // &output_attr[0]
-    outputs_num,
-    640, 640,             // model_w, model_h
-    orign_img.cols, orign_img.rows,   // img_w, img_h
-    0.25f, 0.45f          // conf阈值 / NMS阈值，你可以先用这对
-);
+    //========================================推理之后进行后处理=======================================
+    dets = yolov5_post_process(
+        outputs,
+        output_attr, // &output_attr[0]
+        outputs_num,
+        640, 640,                       // model_w, model_h
+        orign_img.cols, orign_img.rows, // img_w, img_h
+        0.50f, 0.60f                    // conf阈值 / NMS阈值，你可以先用这对
+    );
 
-
-    //==================释放空间=====================
+    //============================================释放空间==================================================================
     if (src_handle)
     {
         releasebuffer_handle(src_handle);

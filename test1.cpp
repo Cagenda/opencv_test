@@ -307,13 +307,25 @@ int main()
     {
         perror("img_tmp failed");
     }
-    post_process();
 
     // 测试图像
+    post_process(); // 会把 labels_vector 填好
     char img_name[] = "/home/orangepi/opencv_test/person.jpg";
     cv::Mat img_tmp2 = cv::imread(img_name, IMREAD_COLOR);
     Yolov5s yolov5s("/home/orangepi/opencv_test/model/yolov5s.rknn", 0);
-    yolov5s.inference_image(img_tmp2);
+    // 3. 推理，拿 dets
+    std::vector<Detection> dets;
+    int ret = yolov5s.inference_image(img_tmp2, dets);
+    if (ret != 0)
+    {
+        std::cerr << "inference_image failed, ret = " << ret << std::endl;
+        return -1;
+    }
+    // 4. 画框
+    draw_detections(img_tmp2, dets, labels_vector);
+    // 5. 保存结果
+    cv::imwrite("/home/orangepi/opencv_test/result.jpg", img_tmp2);
+    std::cout << "saved to /home/orangepi/opencv_test/result.jpg\n";
     while (1)
         ; // 插入断点
     // 定义锁(全局)，专门用于在读取原视频的时候，锁住，防止多个线程读取原视频

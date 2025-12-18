@@ -224,6 +224,61 @@ void Thread_WriterVideo(cv::VideoWriter &writer, SafeQueue<FrameData> &img_q, bo
 //     }
 // }
 
+//==================================简单的画框函数===========================
+void draw_detections(
+    cv::Mat &img,
+    const std::vector<Detection> &dets,
+    const std::vector<std::string> &class_names) // 类别名字，可选
+{
+    for (const auto &det : dets)
+    {
+        // 1. 构造矩形框（左上角 + 宽高）
+        cv::Rect rect;
+        rect.x = static_cast<int>(det.x1);
+        rect.y = static_cast<int>(det.y1);
+        rect.width = static_cast<int>(det.x2 - det.x1);
+        rect.height = static_cast<int>(det.y2 - det.y1);
+
+        // 2. 画框
+        cv::rectangle(img, rect, cv::Scalar(0, 255, 0), 2); // 绿色框，线宽 2
+
+        // 3. 准备一行文字：类别名 + 分数
+        std::string label;
+        if (!class_names.empty() && det.class_id >= 0 && det.class_id < (int)class_names.size())
+        {
+            label = class_names[det.class_id];
+        }
+        else
+        {
+            label = std::to_string(det.class_id);
+        }
+        label += cv::format(" %.2f", det.score);
+
+        // 4. 文字位置（框的左上角上面一点）
+        int baseLine = 0;
+        cv::Size label_size = cv::getTextSize(
+            label, cv::FONT_HERSHEY_SIMPLEX, 0.5, 1, &baseLine);
+
+        int x = rect.x;
+        int y = std::max(rect.y - 5, label_size.height);
+
+        // 画一个实心矩形作为文字背景
+        cv::rectangle(
+            img,
+            cv::Point(x, y - label_size.height),
+            cv::Point(x + label_size.width, y + baseLine),
+            cv::Scalar(0, 255, 0),
+            cv::FILLED);
+
+        // 再把文字画上去
+        cv::putText(
+            img, label,
+            cv::Point(x, y),
+            cv::FONT_HERSHEY_SIMPLEX, 0.5,
+            cv::Scalar(0, 0, 0), 1);
+    }
+}
+
 // 主函数
 int main()
 {

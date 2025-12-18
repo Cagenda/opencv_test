@@ -173,6 +173,9 @@ std::vector<Detection> yolov5_post_process(
     float nms_thres                                 // 例如 0.45
 )
 {
+    // 用来存所有 head 解码出来的候选框
+    std::vector<Detection> dets;
+
     for (size_t i = 0; i < out_num; i++)
     {
         const rknn_tensor_attr &attr = out_attrs[i]; // 先获取一下，tesnor的属性
@@ -184,9 +187,9 @@ std::vector<Detection> yolov5_post_process(
         int8_t *data = static_cast<int8_t *>(out.buf); // 当前 head 的 int8 原始数据指针
         // out.buf 里装的是：这个 head 上 所有格子、所有通道 的数据。
 
-        int C = attr.dims[1]; // 255
+        int C = attr.dims[1]; //  255
         int H = attr.dims[2]; // 经过NPU处理后，图像的纵轴有多少网格（格子数）
-        int W = attr.dims[3]; ////经过NPU处理后，图像的横轴有多少网格
+        int W = attr.dims[3]; // 经过NPU处理后，图像的横轴有多少网格
         float scale = attr.scale;
         float zp = attr.zp;
 
@@ -207,7 +210,7 @@ std::vector<Detection> yolov5_post_process(
                     const int num_classes = 80;                // 你的模型类别数（COCO 就是 80）
                     const int anchor_stride = num_classes + 5; // 85
 
-                    int c_base = static_cast<int>(a) * anchor_stride;
+                    int c_base = static_cast<int>(a) * anchor_stride; // 当前这个 anchor 的起始通道号 = a × 每个 anchor 占的通道数
 
                     // ==== 2. 这个 anchor 的 tx/ty/tw/th/obj 对应的通道号 ====
                     int c_tx = c_base + 0;
@@ -216,7 +219,7 @@ std::vector<Detection> yolov5_post_process(
                     int c_th = c_base + 3;
                     int c_obj = c_base + 4;
 
-                    // ==== 3. 从data中 (c, h, w) 取出这 5 个值，并反量化成 float（） ====
+                    // ==== 3.从data中 (c, h, w) 取出这 5 个值，并反量化成 float（）,注意此时这里的tx，ty...并不是在图片中的真实坐标 ====
                     float tx_raw = get_val_formhead(data, c_tx, h, w, H, W, scale, zp);
                     float ty_raw = get_val_formhead(data, c_ty, h, w, H, W, scale, zp);
                     float tw_raw = get_val_formhead(data, c_tw, h, w, H, W, scale, zp);
@@ -230,7 +233,7 @@ std::vector<Detection> yolov5_post_process(
                         continue; // 这一个 anchor 直接跳过，处理下一个 a
                     }
 
-                    // 5. 遍历类别通道，找到“最可能的那个类别”
+                    // 5. 遍历类别通道，找到“最可能的那个类别”对当前 (h,w,a) 这一“候选框”，在它的 80 个类别输出里，找出「哪个类别最有可能」以及「这个最有可能的类别的概率是多少」
                     float best_cls_prob = 0.0f; // 记录当前 anchor 上最大的类别概率
                     int best_cls_id = -1;       // 对应的类别 ID
 
@@ -238,7 +241,7 @@ std::vector<Detection> yolov5_post_process(
                     {
                         // 这个类别在 C 维上的通道号：
                         // 前面 5 个是 tx,ty,tw,th,obj，所以类别从 c_base + 5 开始往后排
-                        int c_cls = c_base + 5 + cls; // c_cls是类别编号概率值（每一个anchor中的后面80个类别）
+                        int c_cls = c_base + 5 + cls; // c_cls是类别编号（每一个anchor中的后面80个类别）
 
                         // 取出这个 (c_cls, h, w) 位置的 raw 值（先反量化）
                         float cls_raw = get_val_formhead(data, c_cls, h, w, H, W, scale, zp);
@@ -252,10 +255,89 @@ std::vector<Detection> yolov5_post_process(
                             best_cls_id = cls;
                         }
                     }
+                    // 6. 计算最终的置信度：score = obj_conf * class_conf
+                    float score = obj * best_cls_prob;
+                    // 如果综合置信度太低，就没必要再解码坐标了，直接丢掉这个框
+                    if (score < conf_thres)
+                    {
+                        continue; // 跳过这个 anchor，处理下一个
+                    }
+                    // 走到这里：
+                    // - 这个框有较高的 obj（有目标的可能性）
+                    // - 也有较高的 best_cls_prob（属于某一类的可能性）
+                    // - score 也 >= conf_thres，可以认为是“值得保留”的候选框
+
+                    //============7.解码：tx,ty,tw,th先得到它们在 模型输入尺寸（640×640）上的坐标。=============
+                    // 当前 head 的 stride；你前面已经算过：
+                    float stride_x = (float)model_w / W; // 比如 8、16、32
+                    float stride_y = (float)model_h / H;
+
+                    // 1. 解码中心点（在 640×640 上）
+                    float x_center = (sigmod(tx_raw) * 2.0f - 0.5f + w) * stride_x;
+                    float y_center = (sigmod(ty_raw) * 2.0f - 0.5f + h) * stride_y;
+
+                    // 2. 解码宽高，需要用到这个 head 对应的 anchor 尺寸
+                    //    先假设你已经有当前 head 的 anchor 数组：anchors[3][2] = { {aw0, ah0}, {aw1, ah1}, {aw2, ah2} };
+                    float aw = anchors[a][0]; // 这个 anchor 的基准宽度（在 640 尺度下）
+                    float ah = anchors[a][1]; // 这个 anchor 的基准高度
+
+                    float tw_act = sigmod(tw_raw);
+                    float th_act = sigmod(th_raw);
+
+                    // YOLOv5 里常用的宽高解码形式（结构理解即可）
+                    float bw = (tw_act * 2.0f) * (tw_act * 2.0f) * aw; // 预测框宽度
+                    float bh = (th_act * 2.0f) * (th_act * 2.0f) * ah; // 预测框高度
+
+                    // ==================8.由 “中心点 + 宽高” 转成左上角/右下角坐标（仍然是 640×640 坐标系）===============
+                    float x1 = x_center - bw / 2.0f;
+                    float y1 = y_center - bh / 2.0f;
+                    float x2 = x_center + bw / 2.0f;
+                    float y2 = y_center + bh / 2.0f;
+
+                    // 简单做一下边界裁剪，防止越界（可选，但很常见）
+                    if (x1 < 0)
+                        x1 = 0;
+                    if (y1 < 0)
+                        y1 = 0;
+                    if (x2 > model_w)
+                        x2 = (float)model_w;
+                    if (y2 > model_h)
+                        y2 = (float)model_h;
+
+                    // ==================9.把 640×640 上的坐标，映射回原始图像大小===============
+                    float r_x = (float)img_w / (float)model_w; // 宽度缩放比例
+                    float r_y = (float)img_h / (float)model_h; // 高度缩放比例
+                    Detection det;
+                    det.class_id = best_cls_id;
+                    det.score = score;
+
+                    // 先把坐标从模型输入尺度映射回原图尺度
+                    det.x1 = x1 * r_x;
+                    det.y1 = y1 * r_y;
+                    det.x2 = x2 * r_x;
+                    det.y2 = y2 * r_y;
+
+                    // （可选）再做一遍边界裁剪，保证不出界
+                    if (det.x1 < 0)
+                        det.x1 = 0;
+                    if (det.y1 < 0)
+                        det.y1 = 0;
+                    if (det.x2 > img_w)
+                        det.x2 = (float)img_w;
+                    if (det.y2 > img_h)
+                        det.y2 = (float)img_h;
+
+                    // 10. 把这个候选框保存到 dets 中，后面统一做 NMS
+                    dets.push_back(det);
                 }
 
                 /* code */
             }
         }
     }
+    // 11. 所有 head 的候选框都收集完了，在 dets 里统一做一次 NMS
+    nms_per_class(dets, nms_thres);
+
+    // 12. 把最终的结果返回给调用者
+    return dets;
 }

@@ -9,6 +9,7 @@ const int anchors[3][6] = {
     {116, 90, 156, 198, 373, 326} // 第三层 (Index 2)
 };
 
+std::vector<std::string> labels_vector; // 装labels的容器
 struct Probarry
 {
     float conf;

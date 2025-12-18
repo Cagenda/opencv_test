@@ -172,7 +172,7 @@ int Yolov5s::inference_image(const cv::Mat &orign_img, std::vector<Detection> &d
     src_cvt_handle = importbuffer_virtualaddr(src_cvt_buf, img_weidth * img_height * img_channel);
     dst_handle = importbuffer_virtualaddr(dst_buf, resize_width * resize_height * resize_channel);
     // rga_buffer_handle_t src_handle = importbuffer_virtualaddr((void*)orign_img.data,  img_weidth * img_height * img_channel);
-    if (src_handle == 0 | src_cvt_handle == 0 | dst_handle == 0)
+    if (src_handle == 0 || src_cvt_handle == 0 || dst_handle == 0)
     {
         printf("imppt va failed\n");
         return 1;

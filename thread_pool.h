@@ -1,13 +1,14 @@
 #ifndef _THREAD_POOL_H_
 #define _THREAD_POOL_H_
 #include <iostream>
+#include "yolov5s.h"
 #include <map>
 #include <mutex>
 #include <queue>
 #include <condition_variable>
 #include<atomic>
 #include<thread>
-
+#include <memory>//为了使用 std::unique_ptr
 // 1. 包含OpenCV核心功能头文件，定义了  cv::Mat
 #include <opencv2/highgui.hpp>
 #include <future>      // 【新增】核心库：用于支持 future 和 promise
@@ -15,7 +16,7 @@
 class ThreadPool
 {
 public:
-    ThreadPool(int num_thread);//num_threads是线程池数量
+    ThreadPool(int num_thread,const std::string& model_path, int npu_core_num = 3);//num_threads是线程池数量
     ~ThreadPool();
 
     // 【修改】返回值变成了 std::future<cv::Mat> 这意味着：提交任务后，你会立刻得到一个“未来的结果凭证”
@@ -26,6 +27,8 @@ public:
 
 
 private:
+    std::string model_path_;
+    int npu_core_num_ = 3;
     std::atomic<bool> run;//用来判断线程池是否关闭
     
     //任务队列里直接存 packaged_task

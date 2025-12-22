@@ -14,9 +14,9 @@
 
 using namespace std;
 using namespace cv;
-
-ThreadPool gthreadpool(12);      // 定义一个线程池，这个线程池中有12个线程
-static int g_frame_start_id = 0; // 用于帧的起始id
+// RK3588 有 3 个 NPU 核心，我们创建 6 个实例来保证流水线充盈
+ThreadPool gthreadpool(6, "/home/orangepi/opencv_test/model/yolov5s.rknn", 3); // 定义一个线程池，这个线程池中有12个线程
+static int g_frame_start_id = 0;                                               // 用于帧的起始id
 
 // 定义每一帧（也就是每一张的图片）的信息
 struct FrameData
@@ -56,11 +56,11 @@ void Thread_ReadVideo(VideoCapture &video, SafeQueue<FrameData> &img_queue, int 
         img_index++;
         frame_tmp.index = img_index;
         img_queue.enqueue(frame_tmp); // 安全入队
-        if (img_index >= 0)
+        if (img_index % 30 == 0)
         {
             printf("read img_index:%d:\n", img_index);
         }
-        std::this_thread::sleep_for(std::chrono::milliseconds(250));
+        // std::this_thread::sleep_for(std::chrono::milliseconds(250));
     }
     finish = true;
     printf("read end:\n");
@@ -178,7 +178,7 @@ void Thread_WriterVideo(cv::VideoWriter &writer, SafeQueue<FrameData> &img_q, bo
             writer.write(img_tmp);
         }
         // 打印进度
-        if (frame_tmp.index > 0 && frame_tmp.index % 10 == 0)
+        if (frame_tmp.index > 0 && frame_tmp.index % 30 == 0)
         {
             printf("write index %d finished \n", frame_tmp.index);
         }
@@ -307,27 +307,26 @@ int main()
     {
         perror("img_tmp failed");
     }
-
-    // 测试图像
     post_process(); // 会把 labels_vector 填好
-    char img_name[] = "/home/orangepi/opencv_test/person.jpg";
-    cv::Mat img_tmp2 = cv::imread(img_name, IMREAD_COLOR);
-    Yolov5s yolov5s("/home/orangepi/opencv_test/model/yolov5s.rknn", 0);
-    // 3. 推理，拿 dets
-    std::vector<Detection> dets;
-    int ret = yolov5s.inference_image(img_tmp2, dets);
-    if (ret != 0)
-    {
-        std::cerr << "inference_image failed, ret = " << ret << std::endl;
-        return -1;
-    }
-    // 4. 画框
-    draw_detections(img_tmp2, dets, labels_vector);
-    // 5. 保存结果
-    cv::imwrite("/home/orangepi/opencv_test/result.jpg", img_tmp2);
-    std::cout << "saved to /home/orangepi/opencv_test/result.jpg\n";
-    while (1)
-        ; // 插入断点
+    // // 测试图像
+    // char img_name[] = "/home/orangepi/opencv_test/person.jpg";
+    // cv::Mat img_tmp2 = cv::imread(img_name, IMREAD_COLOR);
+    // Yolov5s yolov5s("/home/orangepi/opencv_test/model/yolov5s.rknn", 0);
+    // // 3. 推理，拿 dets
+    // std::vector<Detection> dets;
+    // int ret = yolov5s.inference_image(img_tmp2, dets);
+    // if (ret != 0)
+    // {
+    //     std::cerr << "inference_image failed, ret = " << ret << std::endl;
+    //     return -1;
+    // }
+    // // 4. 画框
+    // draw_detections(img_tmp2, dets, labels_vector);
+    // // 5. 保存结果
+    // cv::imwrite("/home/orangepi/opencv_test/result.jpg", img_tmp2);
+    // std::cout << "saved to /home/orangepi/opencv_test/result.jpg\n";
+    // while (1)
+    //     ; // 插入断点
     // 定义锁(全局)，专门用于在读取原视频的时候，锁住，防止多个线程读取原视频
     mutex cap_m;
 

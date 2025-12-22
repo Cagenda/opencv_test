@@ -19,7 +19,8 @@ static void print_tensor_attr(rknn_tensor_attr *attr)
            attr->scale,
            attr->zp); // size：准备这么大的内存来装这个tensor,scale是缩放因子，zp 是零点 (Zero Point)。这是反量化公式中的 zp
 }
-
+int flag = 0;
+//==========================================初始化函数
 Yolov5s::Yolov5s(const char *model_path, int npu_index)
 { // 在这里需要先将模型放在RAM中，再从RAM中导入到NPU中
 
@@ -37,7 +38,8 @@ Yolov5s::Yolov5s(const char *model_path, int npu_index)
         printf("model init success \n");
     }
     //=============================================================================================
-    // 调用NPU（暂时没用到）
+    // 调用NPU   一个 Yolov5s 实例 = 一个 rknn_context = 绑定到一个固定的 NPU 核。
+
     rknn_core_mask core_mask; // 设置 NPU 核（core_mask）
     if (npu_index == 0)
     {
@@ -62,11 +64,11 @@ Yolov5s::Yolov5s(const char *model_path, int npu_index)
 
     // 1.查询SDK_Versisn（不知道用来做什么）把SDK_Version信息存放在version中
     rknn_query(ctx, RKNN_QUERY_SDK_VERSION, &this->version, sizeof(this->version));
-    printf("sdk version :%s,drv version:%s\n", version.api_version, version.drv_version);
+    // printf("sdk version :%s,drv version:%s\n", version.api_version, version.drv_version);
 
     // 2.查询tensor io_num,注意io_num是一个结构体
     rknn_query(ctx, RKNN_QUERY_IN_OUT_NUM, &this->io_num, sizeof(this->io_num));
-    printf("input num :%d\n output num :%d\n", this->io_num.n_input, this->io_num.n_output);
+    // printf("input num :%d\n output num :%d\n", this->io_num.n_input, this->io_num.n_output);
 
     // 3.（获取 input_attr 和 output_attr)
     // io_num和其关系：io_num 告诉你“有多少个”，而 input_attr（或 inputs 数组）是用来“装这这么多东西”的容器。
@@ -84,7 +86,7 @@ Yolov5s::Yolov5s(const char *model_path, int npu_index)
         {
             perror("Yolov5s get index input failed");
         }
-        print_tensor_attr(&(input_attr[i]));
+        // print_tensor_attr(&(input_attr[i]));
     }
 
     for (int i = 0; i < io_num.n_output; i++)
@@ -98,7 +100,7 @@ Yolov5s::Yolov5s(const char *model_path, int npu_index)
         {
             perror("Yolov5s get index output failed");
         }
-        print_tensor_attr(&(output_attr[i]));
+        // print_tensor_attr(&(output_attr[i]));
     }
     // 获取输入format，对于NCHW和NHWC两种不一样的format分别讨论，信息写入变量中
     if (input_attr[0].fmt == RKNN_TENSOR_NCHW)
@@ -113,9 +115,8 @@ Yolov5s::Yolov5s(const char *model_path, int npu_index)
         model_weidth = input_attr[0].dims[2];
         model_channel = input_attr[0].dims[3];
     }
-    //=================================================================================================
 }
-// 析构函数
+// =========================================析构函数
 Yolov5s::~Yolov5s()
 {
     if (model_data)
@@ -123,10 +124,10 @@ Yolov5s::~Yolov5s()
         free(model_data);
     }
 }
-
+//=======================================推理函数部分
 int Yolov5s::inference_image(const cv::Mat &orign_img, std::vector<Detection> &dets)
 {
-    //======================================图像根据模型输入输出信息进行预处理=============================
+    //======================================图像根据模型输入输出信息进行预处理===================
     int ret = 0;
     img_weidth = orign_img.cols;
     img_height = orign_img.rows;
@@ -136,13 +137,13 @@ int Yolov5s::inference_image(const cv::Mat &orign_img, std::vector<Detection> &d
     int resize_width = this->model_weidth;
     int resize_channel = this->model_channel;
 
-    printf("Image Width     :%d\n", img_weidth);
-    printf("Image Height    :%d\n", img_height);
-    printf("Image Channel   :%d\n", img_channel);
+    // printf("Image Width     :%d\n", img_weidth);
+    // printf("Image Height    :%d\n", img_height);
+    // printf("Image Channel   :%d\n", img_channel);
 
-    printf("Resize Width     :%d\n", resize_width);
-    printf("Resize Height    :%d\n", resize_height);
-    printf("Resize Channel   :%d\n", resize_channel);
+    // printf("Resize Width     :%d\n", resize_width);
+    // printf("Resize Height    :%d\n", resize_height);
+    // printf("Resize Channel   :%d\n", resize_channel);
 
     auto start = std::chrono::high_resolution_clock::now();
     // // opencv处理图像
@@ -158,14 +159,15 @@ int Yolov5s::inference_image(const cv::Mat &orign_img, std::vector<Detection> &d
     // -=========RGA进行图像处理=======================
     // 1.开辟内存空间
     char *src_buf, *src_cvt_buf, *dst_buf;
-    src_buf = (char *)malloc(img_weidth * img_height * img_channel);
-    src_cvt_buf = (char *)malloc(img_weidth * img_height * img_channel);
+    src_buf = (char *)malloc(img_weidth * img_height * img_channel);         // 存放原始图数据
+    src_cvt_buf = (char *)malloc(img_weidth * img_height * img_channel);     // 存放resize
     dst_buf = (char *)malloc(resize_width * resize_height * resize_channel); // 预处理后的像素数据缓冲区：一个连续的内存块，可以叫它 dst_buf
 
     // 2.地址初始化
-    memcpy(src_buf, orign_img.data, img_weidth * img_height * img_channel);
+    memcpy(src_buf, orign_img.data, img_weidth * img_height * img_channel); // 将原始图片数据copy进src_buf
     memset(src_cvt_buf, 0x00, img_weidth * img_height * img_channel);
     memset(dst_buf, 0x00, resize_width * resize_height * resize_channel);
+
     // 变为虚拟地址,把你的虚拟地址转换成 RGA 可用的地址
     rga_buffer_handle_t src_handle, src_cvt_handle, dst_handle;
     src_handle = importbuffer_virtualaddr(src_buf, img_weidth * img_height * img_channel);
@@ -182,16 +184,15 @@ int Yolov5s::inference_image(const cv::Mat &orign_img, std::vector<Detection> &d
     rga_buffer_t src_cvt = wrapbuffer_handle(src_cvt_handle, img_weidth, img_height, RK_FORMAT_RGB_888);
     rga_buffer_t dst = wrapbuffer_handle(dst_handle, resize_width, resize_height, RK_FORMAT_RGB_888);
     // 暂时不用检查 ret = imcheck(src, dst, {}, {});
-    //  4.执行 (Resize + BGR转RGB)
 
+    //  4.执行 (Resize + BGR转RGB)
     ret = imresize(src, dst);
 
-    auto end = std::chrono::high_resolution_clock::now();
-    auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end - start);
-    printf("RGA Process time:%ld   ms \n", duration.count());
+    // auto end = std::chrono::high_resolution_clock::now();
+    // auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end - start);
+    // printf("RGA Process time:%ld   ms \n", duration.count());
     cv::Mat img_rga(resize_height, resize_width, CV_8UC3, dst_buf);
     cv::imwrite("img_rga.jpg", img_rga);
-
     //======================================推理=======================================
     auto start2 = std::chrono::high_resolution_clock::now();
     int inputs_num = io_num.n_input;   // 获取rknn需要的输入节点数量。
@@ -207,7 +208,7 @@ int Yolov5s::inference_image(const cv::Mat &orign_img, std::vector<Detection> &d
     inputs[0].pass_through = 0;                                     // 5. 自动转换从NHWC--->NHCW
     inputs[0].buf = dst_buf;                                        // 6. 挂载数据指针
     rknn_inputs_set(ctx, inputs_num, inputs);                       // 调用 rknn_inputs_set将数据拷贝到 NPU 输入内存
-    //=================填充第输出的信息==============
+    //=================填充输出的信息==============
     rknn_output outputs[outputs_num];
     memset(outputs, 0, sizeof(outputs));
     // 循环填入输出信息
@@ -215,17 +216,17 @@ int Yolov5s::inference_image(const cv::Mat &orign_img, std::vector<Detection> &d
     {
         outputs[i].want_float = 0; // 【关键】设为 0，不让驱动帮你把结果转成 float。原因：减少数据传输量（核心原因）int8 数据占用 1 个字节，而 float32 占用 4 个字节
     }
-    //=================rknn_run==============
-    printf("模型开始推理\n");
+    //=================rknn_run===============================
+    // printf("模型开始推理\n");
     ret = rknn_run(ctx, NULL); // 推理核心函数
-    if (ret == 0)
-    {
-        printf("模型推理成功!\n");
-    }
+    // if (ret == 0)
+    // {
+    //     printf("模型推理成功!\n");
+    // }
     rknn_outputs_get(ctx, outputs_num, outputs, NULL);
-    auto end2 = std::chrono::high_resolution_clock::now();
-    auto duration2 = std::chrono::duration_cast<std::chrono::milliseconds>(end2 - start2);
-    printf("模型推理用时:%ld   ms \n", duration2.count());
+    // auto end2 = std::chrono::high_resolution_clock::now();
+    // auto duration2 = std::chrono::duration_cast<std::chrono::milliseconds>(end2 - start2);
+    // printf("模型推理用时:%ld   ms \n", duration2.count());
 
     //========================================推理之后进行后处理=======================================
     dets = yolov5_post_process(

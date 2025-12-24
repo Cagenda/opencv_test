@@ -56,7 +56,7 @@ void Thread_ReadVideo(VideoCapture &video, SafeQueue<FrameData> &img_queue, int 
         img_index++;
         frame_tmp.index = img_index;
         img_queue.enqueue(frame_tmp); // 安全入队
-        if (img_index % 30 == 0)
+        if (img_index % 60 == 0)
         {
             printf("read img_index:%d:\n", img_index);
         }
@@ -178,7 +178,7 @@ void Thread_WriterVideo(cv::VideoWriter &writer, SafeQueue<FrameData> &img_q, bo
             writer.write(img_tmp);
         }
         // 打印进度
-        if (frame_tmp.index > 0 && frame_tmp.index % 30 == 0)
+        if (frame_tmp.index > 0 && frame_tmp.index % 60 == 0)
         {
             printf("write index %d finished \n", frame_tmp.index);
         }

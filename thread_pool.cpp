@@ -75,20 +75,64 @@ ThreadPool::~ThreadPool()
 //==================================插入任务函数========================
 std::future<cv::Mat> ThreadPool::sumbit_task(const cv::Mat &img, int index)
 {
-    // 1. 定义具体的任务逻辑 (Lambda)
-    // 这里的代码将来会在 Worker 线程里执行
-    // [img, index]：把图片和序号捕获（复制）进这个任务包里
-    // “定义一个名字叫 job_func 的匿名任务。这个任务随身携带了外面的 img 和 index 的副本（背包）。启动这个任务不需要传参（括号是空的）。任务做完后，承诺会吐出一张 cv::Mat 图片（箭头指向返回值）。
+    // 定义具体的任务逻辑 (Lambda)
     auto job_func = [img, index, this]() -> cv::Mat
     {
-        // ✅ 这句会在“执行该任务的 worker 线程”里运行
-        // 第一次调用会初始化本线程的 Yolov5s；后续复用
-        Yolov5s &yolo = get_tls_yolo(this->model_path_, this->npu_core_num_); // 如果本线程是第一层被调用，则会初始化yolo的构造函数，在yolo构造函数中，为这个线程设置NPU的核
+        // ======================= 1. 准备日志信息 =======================
+        // 获取当前线程ID
+        std::thread::id tid = std::this_thread::get_id();
+        std::stringstream ss_id;
+        ss_id << tid; // 将线程ID转为字符串
 
+        // 获取精确的开始时间 (System Clock 用于显示人类可读时间)
+        auto now = std::chrono::system_clock::now();
+        auto now_time_t = std::chrono::system_clock::to_time_t(now);
+        auto now_ms = std::chrono::duration_cast<std::chrono::milliseconds>(now.time_since_epoch()) % 1000;
+
+        // 打印【开始】日志
+        // 格式：[开始] 时间 线程ID 任务序号
+        // 使用 printf 是为了原子性好一点，防止多线程 cout 输出乱序
+        printf("[Start] Time=%02ld:%02ld:%02ld.%03ld | Thread=%s | TaskIndex=%d\n",
+               (now_time_t / 3600) % 24 + 8, // 简单调整时区(UTC+8)，如果系统时间已校准可去掉+8
+               (now_time_t / 60) % 60,
+               now_time_t % 60,
+               now_ms.count(),
+               ss_id.str().c_str(),
+               index);
+
+        // ======================= 2. 执行原有核心逻辑 =======================
+        // 记录高精度计时起点（用于计算耗时）
+        auto t1 = std::chrono::high_resolution_clock::now();
+
+        Yolov5s &yolo = get_tls_yolo(this->model_path_, this->npu_core_num_);
         cv::Mat out = img.clone();
         std::vector<Detection> dets;
-        yolo.inference_image(out, dets);           // ✅ 真正跑一帧推理
-        draw_detections(out, dets, labels_vector); // 画框
+
+        // 模拟耗时（如果你想测试并发，可以把这行取消注释）
+        // std::this_thread::sleep_for(std::chrono::milliseconds(500));
+
+        yolo.inference_image(out, dets);
+        draw_detections(out, dets, labels_vector);
+
+        auto t2 = std::chrono::high_resolution_clock::now();
+        // 计算耗时 (ms)
+        double duration = std::chrono::duration<double, std::milli>(t2 - t1).count();
+
+        // ======================= 3. 打印【结束】日志 =======================
+        // 获取结束时间点
+        now = std::chrono::system_clock::now();
+        now_time_t = std::chrono::system_clock::to_time_t(now);
+        now_ms = std::chrono::duration_cast<std::chrono::milliseconds>(now.time_since_epoch()) % 1000;
+
+        printf("[End  ] Time=%02ld:%02ld:%02ld.%03ld | Thread=%s | TaskIndex=%d | Cost=%.2f ms\n",
+               (now_time_t / 3600) % 24 + 8,
+               (now_time_t / 60) % 60,
+               now_time_t % 60,
+               now_ms.count(),
+               ss_id.str().c_str(),
+               index,
+               duration);
+
         return out;
     };
     // 用你提供的参数构造一个 T 对象返回一个 shared_ptr<T> 指向这个对象用 job_func 去构造一个 packaged_taskcv::Mat()，然后把这个任务对象用 shared_ptr 管起来
@@ -110,7 +154,7 @@ std::future<cv::Mat> ThreadPool::sumbit_task(const cv::Mat &img, int index)
         // 因为 task 是独占的，你必须把它“移”进队列，原来的 task 变量就空了
         std::lock_guard<std::mutex> lock(task_mtx);
         tasks.push(std::move(task)); // 将task(job_func)放进了tasks的队列中，，等待线程认领
-        if (index % 30 == 0)
+        if (index % 60 == 0)
         {
             printf("已经提交%d个任务给线程池中的任务队列\n", index);
         }

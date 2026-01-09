@@ -15,7 +15,11 @@ message(STATUS "    c'mac'macmalibraries: ${OpenCV_LIBS}")       # 输出 OpenCV
 message(STATUS "    include path: ${OpenCV_INCLUDE_DIRS}")  # 输出 OpenCV 包含文件的路径
 message(" this is meihua!")
 
-#设定RK3588的库
+
+# 【建议 2】查找系统线程库 (pthread)
+find_package(Threads REQUIRED)
+
+#========================设定RK3588的库================
 set(DEVICE_NAME "RK3588")
 #设定第三方库的
 set(LIB_ARCH "aarch64")
@@ -25,7 +29,7 @@ set(RKNN_INCLUDE_DIRS ${RKNN_API_PATH}/include)
 set(RKNN_LIBS ${RKNN_API_PATH}/${LIB_ARCH}/librknnrt.so)
 
 
-#rga_lib
+#==============================rga_lib====================
 set(RGA_DIR ${3DPARTY_PATH}/rga/${DEVICE_NAME})
 set(RGA_INCLUDE_DIRS ${RGA_DIR}/include)
 set(RGA_LIBS ${RGA_DIR}/lib/Linux/aarch64/librga.so)
@@ -38,6 +42,6 @@ include_directories(
 )
 
 # 定义一个名为 cv 的可执行目标，该目标将从 main.cpp 源文件生成。
-add_executable(app test1.cpp thread_pool.cpp yolov5s.cpp post_process.cpp)
+add_executable(app test1.cpp thread_pool.cpp yolov5s.cpp post_process.cpp v4l2_capture.cpp) 
 # 将 OpenCV 的库与目标可执行文件 cv 链接，确保在程序运行时能够调用 OpenCV 函数。
-target_link_libraries(app ${OpenCV_LIBS}  ${RKNN_LIBS}  ${RGA_LIBS})
+target_link_libraries(app ${OpenCV_LIBS}  ${RKNN_LIBS}  ${RGA_LIBS} Threads::Threads)

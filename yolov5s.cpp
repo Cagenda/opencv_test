@@ -235,7 +235,7 @@ int Yolov5s::inference_image(const cv::Mat &orign_img, std::vector<Detection> &d
         outputs_num,
         640, 640,                       // model_w, model_h
         orign_img.cols, orign_img.rows, // img_w, img_h
-        0.50f, 0.60f                    // conf阈值 / NMS阈值，你可以先用这对
+        0.25f, 0.45f                    // conf阈值 / NMS阈值，你可以先用这对
     );
 
     //============================================释放空间==================================================================

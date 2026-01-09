@@ -10,6 +10,7 @@
 #include "yolov5s.h"
 #include "post_process.h"
 #include "thread_pool.h"
+#include "v4l2_capture.h"
 // 2. 包含图像I/O和GUI函数头文件， 定义了 imread, imshow, waitKey#include <iostream>
 
 using namespace std;
@@ -39,31 +40,52 @@ SafeQueue<FrameData> SafeQueue_Write;
 
 // 1. 【生产者】线程函数：只能有一个线程执行它（有mutex）
 // 它的职责是顺序读取视频，并安全地将帧放入队列
-void Thread_ReadVideo(VideoCapture &video, SafeQueue<FrameData> &img_queue, int &img_index, mutex &cap_mutex, bool &finish)
+void Thread_ReadVideo(V4L2Capture &camera, SafeQueue<FrameData> &img_queue, int &img_index, mutex &cap_mutex, bool &finish)
 {
+    printf("Read Thread Started (V4L2 Mode)...\n");
+    // 定义变量来接收 V4L2 返回的数据
+    void *data_ptr = nullptr;
+    int data_size = 0;
+    int buf_index = 0;
     while (1)
     {
-        FrameData frame_tmp;
+        // 1. 【核心】从 V4L2 获取原生 MJPEG 数据 (零拷贝，极快)
+        if (camera.get_frame(data_ptr, data_size, buf_index) != 0)
         {
-            std::lock_guard<mutex> cap_lock(cap_mutex); // 加锁访问读取数据
-            // 尝试从共享的video中读取下一帧，并将图像数据直接存入托盘的.frame部分。
-            if (!video.read(frame_tmp.frame)) // 这里的video.read()已经读取了。读取内容放到了frame_tmp.frame
-            {
-                break;
-            }
+            printf("V4L2 get_frame failed or timeout.\n");
+            break;
         }
-        // 读取到图片
-        img_index++;
-        frame_tmp.index = img_index;
-        img_queue.enqueue(frame_tmp); // 安全入队
+        // 2. (不会)【桥接】解码 MJPEG -> cv::Mat。V4L2 给我们的是内存里的一串二进制 JPG 数据,而 OpenCV 处理图像（画框、检测）需要的是BGR 原始像素矩阵
+        cv::Mat raw_data_wrapper(1, data_size, CV_8UC1, data_ptr);
+        cv::Mat decoded_frame = cv::imdecode(raw_data_wrapper, cv::IMREAD_COLOR);
+        // 3. 【核心】归还 Buffer (QBUF) - 必须在解码后立刻执行
+        // 数据已经解码到 decoded_frame 里了，原来的 buffer 必须还给内核
+        camera.put_frame(buf_index);
+        if (decoded_frame.empty())
+        {
+            printf("Decode failed\n");
+            continue;
+        }
+        // 4. 后续逻辑和原来一样：打包、入队
+        // 你的逻辑中 img_index 是引用，多线程要小心，但目前只有一个读线程，没问题
+        {
+            std::lock_guard<mutex> cap_lock(cap_mutex); // 保持锁习惯，虽然单线程读不需要
+            img_index++;
+        }
+
+        FrameData frame_pack;
+        frame_pack.frame = decoded_frame;
+        frame_pack.index = img_index;
+
+        img_queue.enqueue(frame_pack);
+
+        // 打印日志
         if (img_index % 60 == 0)
         {
-            printf("read img_index:%d:\n", img_index);
+            printf("Read img_index: %d\n", img_index);
         }
-        // std::this_thread::sleep_for(std::chrono::milliseconds(250));
     }
     finish = true;
-    printf("read end:\n");
 }
 
 // 2.处理视频
@@ -284,29 +306,42 @@ int main()
 {
     // 记录时间
     auto start = std::chrono::steady_clock::now();
-
-    // 测试视频
-    char video_path[] = "1.mp4";
-    cv::VideoCapture cap(video_path);
-    // 打开错误判断
-    if (!cap.isOpened())
+    // ================== 1. 初始化 V4L2 相机 ==================
+    // 设置想要的分辨率，比如 1280x720 或 640x480
+    int width = 1280;
+    int height = 720;
+    // 创建V4L2对象
+    V4L2Capture camera("/dev/video0", width, height);
+    if (camera.open_device() < 0)
     {
-        perror("Video_unopened");
+        fprintf(stderr, "Failed to open camera\n");
         return -1;
     }
-    // 获取视频的长宽，以及帧数
-    int width = cap.get(CAP_PROP_FRAME_WIDTH);
-    int height = cap.get(CAP_PROP_FRAME_HEIGHT);
-    double fps = cap.get(CAP_PROP_FPS);
-    int frame_num = cap.get(CAP_PROP_FRAME_COUNT);
+    printf("Camera open success: %dx%d\n", width, height);
 
-    printf("size:%d height:%d fps:%f total:%d\n", width, height, fps, frame_num);
-    cv::Mat img_tmp;
-    cap.read(img_tmp);
-    if (img_tmp.empty())
-    {
-        perror("img_tmp failed");
-    }
+    // // 测试视频
+    // char video_path[] = "1.mp4";
+    // cv::VideoCapture cap(video_path);
+    // // 打开错误判断
+    // if (!cap.isOpened())
+    // {
+    //     perror("Video_unopened");
+    //     return -1;
+    // }
+    // // 获取视频的长宽，以及帧数
+    // int width = cap.get(CAP_PROP_FRAME_WIDTH);
+    // int height = cap.get(CAP_PROP_FRAME_HEIGHT);
+    // double fps = cap.get(CAP_PROP_FPS);
+    // int frame_num = cap.get(CAP_PROP_FRAME_COUNT);
+
+    // printf("size:%d height:%d fps:%f total:%d\n", width, height, fps, frame_num);
+    // cv::Mat img_tmp;
+    // cap.read(img_tmp);
+    // if (img_tmp.empty())
+    // {
+    //     perror("img_tmp failed");
+    // }
+
     post_process(); // 会把 labels_vector 填好
     // // 测试图像
     // char img_name[] = "/home/orangepi/opencv_test/person.jpg";
@@ -342,12 +377,19 @@ int main()
     std::vector<thread> video_readers;
     for (int i = 0; i < num_thread; i++)
     {
-        video_readers.emplace_back(Thread_ReadVideo, ref(cap), ref(SafeQueue_Read), ref(img_index), ref(cap_m), ref(is_read_done));
+        video_readers.emplace_back(Thread_ReadVideo,
+                                   ref(camera), // 传 camera 引用
+                                   ref(SafeQueue_Read),
+                                   ref(img_index),
+                                   ref(cap_m),
+                                   ref(is_read_done));
     }
 
     // 写入视频
     cv::Size frame_size(width, height);
-    cv::VideoWriter writer("/home/orangepi/opencv_test/output.avi", cv::VideoWriter::fourcc('I', '4', '2', '0'), fps, frame_size);
+    // 注意：USB摄像头无法像文件那样直接获取准确 FPS，通常设为 30 或 25
+    double fps = 30.0;
+    cv::VideoWriter writer("/home/orangepi/opencv_test/output_v4l2.avi", cv::VideoWriter::fourcc('I', '4', '2', '0'), fps, frame_size);
 
     // 创建一个处理的线程
     std::thread video_p(Thread_ProcressVideo, ref(SafeQueue_Read), ref(SafeQueue_Write), ref(is_read_done), ref(is_process_done));

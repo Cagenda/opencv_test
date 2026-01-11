@@ -48,6 +48,9 @@ public:
 
     // 4. 停止并关闭 (StreamOff -> Munmap -> Close)
     void close_device();
+    // ✅ 【新增】添加这两个函数声明
+    int get_width();
+    int get_height();
 
 private:
     std::string dev_name_;

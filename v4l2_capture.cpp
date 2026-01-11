@@ -273,3 +273,13 @@ void V4L2Capture::close_device()
     close(fd);
     printf("V4L2: Device Closed.\n");
 }
+
+int V4L2Capture::get_width()
+{
+    return width_;
+}
+
+int V4L2Capture::get_height()
+{
+    return height_;
+}

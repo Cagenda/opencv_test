@@ -92,13 +92,13 @@ std::future<cv::Mat> ThreadPool::sumbit_task(const cv::Mat &img, int index)
         // 打印【开始】日志
         // 格式：[开始] 时间 线程ID 任务序号
         // 使用 printf 是为了原子性好一点，防止多线程 cout 输出乱序
-        printf("[Start] Time=%02ld:%02ld:%02ld.%03ld | Thread=%s | TaskIndex=%d\n",
-               (now_time_t / 3600) % 24 + 8, // 简单调整时区(UTC+8)，如果系统时间已校准可去掉+8
-               (now_time_t / 60) % 60,
-               now_time_t % 60,
-               now_ms.count(),
-               ss_id.str().c_str(),
-               index);
+        // printf("[Start] Time=%02ld:%02ld:%02ld.%03ld | Thread=%s | TaskIndex=%d\n",
+        //        (now_time_t / 3600) % 24 + 8, // 简单调整时区(UTC+8)，如果系统时间已校准可去掉+8
+        //        (now_time_t / 60) % 60,
+        //        now_time_t % 60,
+        //        now_ms.count(),
+        //        ss_id.str().c_str(),
+        //        index);
 
         // ======================= 2. 执行原有核心逻辑 =======================
         // 记录高精度计时起点（用于计算耗时）
@@ -124,14 +124,16 @@ std::future<cv::Mat> ThreadPool::sumbit_task(const cv::Mat &img, int index)
         now_time_t = std::chrono::system_clock::to_time_t(now);
         now_ms = std::chrono::duration_cast<std::chrono::milliseconds>(now.time_since_epoch()) % 1000;
 
-        printf("[End  ] Time=%02ld:%02ld:%02ld.%03ld | Thread=%s | TaskIndex=%d | Cost=%.2f ms\n",
-               (now_time_t / 3600) % 24 + 8,
-               (now_time_t / 60) % 60,
-               now_time_t % 60,
-               now_ms.count(),
-               ss_id.str().c_str(),
-               index,
-               duration);
+        // ======================= 1. 准备日志信息 =======================
+        // ... (前面的时间获取代码可以保留也可以注释，为了省事直接注释打印即可) ...
+        // printf("[End  ] Time=%02ld:%02ld:%02ld.%03ld | Thread=%s | TaskIndex=%d | Cost=%.2f ms\n",
+        //        (now_time_t / 3600) % 24 + 8,
+        //        (now_time_t / 60) % 60,
+        //        now_time_t % 60,
+        //        now_ms.count(),
+        //        ss_id.str().c_str(),
+        //        index,
+        //        duration);
 
         return out;
     };

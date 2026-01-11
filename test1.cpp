@@ -162,43 +162,94 @@ void Thread_ProcressVideo(SafeQueue<FrameData> &r_queue, SafeQueue<FrameData> &w
 }
 
 // 3.创建写入视频的函数（消费者）
-void Thread_WriterVideo(cv::VideoWriter &writer, SafeQueue<FrameData> &img_q, bool &process_finish)
+// void Thread_WriterVideo(cv::VideoWriter &writer, SafeQueue<FrameData> &img_q, bool &process_finish)
+// {
+//     // frame_tmp完整地接收从队列中取出的整个数据包（包含帧内容和索引）包含 Mat + index
+//     // img_tmp用来单独存放从frame_tmp中提取出来的图像帧，以便后续处理
+//     Mat img_tmp;
+//     FrameData frame_tmp;
+//     // start：计时起点，用于后面计算“间隔多久写一帧”。
+//     auto start = std::chrono::high_resolution_clock::now();
+//     while (1)
+//     {
+
+//         // =========================================================
+//         // 【修改点 2】退出条件逻辑
+//         // 只有当：处理线程说结束了 (process_finish) && 写队列也没货了
+//         // 才是真正的结束
+//         // =========================================================
+//         if (process_finish && img_q.empty())
+//         {
+//             printf("写线程结束 (All Finished)\n");
+//             break;
+//         }
+//         if (img_q.empty())
+//         {
+//             // 如果队列空了但还没 finish，就稍等一下，避免死循环空转
+//             std::this_thread::sleep_for(std::chrono::milliseconds(1));
+//             continue;
+//         }
+
+//         // ② 直接阻塞式取数据（队列空了就睡觉）
+//         img_q.dequeue(frame_tmp);
+//         img_tmp = frame_tmp.frame;
+//         if (!img_tmp.empty())
+//         {
+//             // VideoWriter 的 write 本身就是阻塞的（写硬盘IO操作）
+//             // 它写多快，我们就跑多快，不再人为限速
+//             writer.write(img_tmp);
+//         }
+//         // 打印进度
+//         if (frame_tmp.index > 0 && frame_tmp.index % 60 == 0)
+//         {
+//             printf("write index %d finished \n", frame_tmp.index);
+//         }
+//     }
+// }
+// 3.创建写入视频的函数（消费者）—— 【修改版：使用 Linux 管道】
+// 注意：第一个参数改成了 FILE* pipe_fp，不再是 VideoWriter
+void Thread_WriterVideo(FILE *pipe_fp, SafeQueue<FrameData> &img_q, bool &process_finish)
 {
-    // frame_tmp完整地接收从队列中取出的整个数据包（包含帧内容和索引）包含 Mat + index
-    // img_tmp用来单独存放从frame_tmp中提取出来的图像帧，以便后续处理
     Mat img_tmp;
     FrameData frame_tmp;
-    // start：计时起点，用于后面计算“间隔多久写一帧”。
-    auto start = std::chrono::high_resolution_clock::now();
+
+    // 检查管道是否有效
+    if (pipe_fp == nullptr)
+    {
+        printf("Error: FFmpeg pipe is null\n");
+        return;
+    }
+
     while (1)
     {
-
-        // =========================================================
-        // 【修改点 2】退出条件逻辑
-        // 只有当：处理线程说结束了 (process_finish) && 写队列也没货了
-        // 才是真正的结束
-        // =========================================================
+        // 退出条件
         if (process_finish && img_q.empty())
         {
             printf("写线程结束 (All Finished)\n");
             break;
         }
+
         if (img_q.empty())
         {
-            // 如果队列空了但还没 finish，就稍等一下，避免死循环空转
             std::this_thread::sleep_for(std::chrono::milliseconds(1));
             continue;
         }
 
-        // ② 直接阻塞式取数据（队列空了就睡觉）
+        // 取出数据
         img_q.dequeue(frame_tmp);
         img_tmp = frame_tmp.frame;
+
         if (!img_tmp.empty())
         {
-            // VideoWriter 的 write 本身就是阻塞的（写硬盘IO操作）
-            // 它写多快，我们就跑多快，不再人为限速
-            writer.write(img_tmp);
+            // ================= 核心修改 =================
+            // 原来是：writer.write(img_tmp);
+            // 现在是：直接把内存里的 BGR 数据，写入管道文件
+            // img_tmp.data 是图片数据的首地址
+            // img_tmp.total() * img_tmp.elemSize() 是这一帧的总字节数 (1280*720*3)
+            fwrite(img_tmp.data, 1, img_tmp.total() * img_tmp.elemSize(), pipe_fp);
+            // ===========================================
         }
+
         // 打印进度
         if (frame_tmp.index > 0 && frame_tmp.index % 60 == 0)
         {
@@ -206,6 +257,7 @@ void Thread_WriterVideo(cv::VideoWriter &writer, SafeQueue<FrameData> &img_q, bo
         }
     }
 }
+
 //(老师原版)定义一个写入视频帧的线程函数
 // void Thread_WriterVideo(VideoWriter &writer, SafeQueue<FrameData> &img_queue, bool &finished)
 // {
@@ -317,8 +369,13 @@ int main()
         fprintf(stderr, "Failed to open camera\n");
         return -1;
     }
+    // ====================================================
+    // 🔴 核心修复点：必须在这里更新 width 和 height！
+    // 只有这样，如果驱动把分辨率改成了 640x480，下面的 FFmpeg 才会知道
+    // ====================================================
+    width = camera.get_width();   // 获取真实宽度
+    height = camera.get_height(); // 获取真实高度
     printf("Camera open success: %dx%d\n", width, height);
-
     // // 测试视频
     // char video_path[] = "1.mp4";
     // cv::VideoCapture cap(video_path);
@@ -386,16 +443,44 @@ int main()
     }
 
     // 写入视频
+    // cv::Size frame_size(width, height);
+    // // 注意：USB摄像头无法像文件那样直接获取准确 FPS，通常设为 30 或 25
+    // double fps = 30.0;
+    // cv::VideoWriter writer("/home/orangepi/opencv_test/output_v4l2.avi", cv::VideoWriter::fourcc('I', '4', '2', '0'), fps, frame_size);
+    // 写入视频
+
+    // ================= 核心修改开始 =================
+    // 写入视频配置
     cv::Size frame_size(width, height);
-    // 注意：USB摄像头无法像文件那样直接获取准确 FPS，通常设为 30 或 25
     double fps = 30.0;
-    cv::VideoWriter writer("/home/orangepi/opencv_test/output_v4l2.avi", cv::VideoWriter::fourcc('I', '4', '2', '0'), fps, frame_size);
+
+    // ================= 核心修改开始 =================
+    // 1. 设置推流地址 (确认是你刚才验证成功的那个 IP)
+    std::string rtmp_url = "rtmp://192.168.137.181/live/test";
+
+    // 2. 组装 FFmpeg 命令管道 (和之前一样)
+    // 注意： -s 1280x720 必须和你前面定义的 width/height 完全一致
+    std::string command = "ffmpeg -y -f rawvideo -vcodec rawvideo -pix_fmt bgr24 -s " + std::to_string(width) + "x" + std::to_string(height) + " -r " + std::to_string(fps) + " -i - -c:v libx264 -pix_fmt yuv420p -preset ultrafast -f flv " + rtmp_url;
+
+    // 3. 【重点】使用 Linux 系统调用 popen 打开一个进程
+    // "w" 表示我们要向这个进程“写”数据
+    // 这相当于在代码里帮你运行了刚才那条 ffmpeg 命令
+    FILE *ffmpeg_pipe = popen(command.c_str(), "w");
+
+    if (ffmpeg_pipe == nullptr)
+    {
+        std::cerr << "无法打开 FFmpeg 管道，请检查命令！" << std::endl;
+        return -1;
+    }
+    // ================= 核心修改结束 =================
 
     // 创建一个处理的线程
     std::thread video_p(Thread_ProcressVideo, ref(SafeQueue_Read), ref(SafeQueue_Write), ref(is_read_done), ref(is_process_done));
 
     // 创建一个写入视频的线程
-    std::thread video_w(Thread_WriterVideo, ref(writer), ref(SafeQueue_Write), ref(is_process_done));
+    // 创建一个写入视频的线程 —— 【注意：这里传参变了】
+    // 传入的是 ffmpeg_pipe 指针，而不是 writer
+    std::thread video_w(Thread_WriterVideo, ffmpeg_pipe, ref(SafeQueue_Write), ref(is_process_done));
 
     // 回收线程资源
     for (thread &t : video_readers)
@@ -408,5 +493,7 @@ int main()
     auto dur = std::chrono::duration_cast<std::chrono::milliseconds>(end - start);
     std::cout << "程序总运行时间：" << dur.count() << " ms\n";
     video_w.join(); // 等待写入视频线程完成
+    // 【新增】程序结束前，关闭管道
+    pclose(ffmpeg_pipe);
     return 0;
 }

@@ -191,8 +191,9 @@ int Yolov5s::inference_image(const cv::Mat &orign_img, std::vector<Detection> &d
     // auto end = std::chrono::high_resolution_clock::now();
     // auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end - start);
     // printf("RGA Process time:%ld   ms \n", duration.count());
-    cv::Mat img_rga(resize_height, resize_width, CV_8UC3, dst_buf);
-    cv::imwrite("img_rga.jpg", img_rga);
+
+    // cv::Mat img_rga(resize_height, resize_width, CV_8UC3, dst_buf);
+    // cv::imwrite("img_rga.jpg", img_rga);
     //======================================推理=======================================
     auto start2 = std::chrono::high_resolution_clock::now();
     int inputs_num = io_num.n_input;   // 获取rknn需要的输入节点数量。

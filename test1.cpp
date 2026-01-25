@@ -12,12 +12,13 @@
 #include "thread_pool.h"
 #include "v4l2_capture.h"
 // 2. 包含图像I/O和GUI函数头文件， 定义了 imread, imshow, waitKey#include <iostream>
+#include "stream_loader.h"
 
 using namespace std;
 using namespace cv;
 // RK3588 有 3 个 NPU 核心，我们创建 6 个实例来保证流水线充盈
-ThreadPool gthreadpool(6, "/home/orangepi/opencv_test/model/yolov5s.rknn", 3); // 定义一个线程池，这个线程池中有12个线程
-static int g_frame_start_id = 0;                                               // 用于帧的起始id
+ThreadPool gthreadpool(12, "/home/orangepi/opencv_test/model/yolov5s.rknn", 3); // 定义一个线程池，这个线程池中有12个线程
+static int g_frame_start_id = 0;                                                // 用于帧的起始id
 
 // 定义每一帧（也就是每一张的图片）的信息
 struct FrameData
@@ -40,41 +41,53 @@ SafeQueue<FrameData> SafeQueue_Write;
 
 // 1. 【生产者】线程函数：只能有一个线程执行它（有mutex）
 // 它的职责是顺序读取视频，并安全地将帧放入队列
-void Thread_ReadVideo(V4L2Capture &camera, SafeQueue<FrameData> &img_queue, int &img_index, mutex &cap_mutex, bool &finish)
+void Thread_ReadVideo(StreamLoader &camera, SafeQueue<FrameData> &img_queue, int &img_index, mutex &cap_mutex, bool &finish)
 {
-    printf("Read Thread Started (V4L2 Mode)...\n");
-    // 定义变量来接收 V4L2 返回的数据
-    void *data_ptr = nullptr;
-    int data_size = 0;
-    int buf_index = 0;
+    printf("Read Thread Started (RTSP Mode)...\n");
+
+    // 启动 StreamLoader 的拉流线程（就在这个函数里跑死循环，或者调用 operator()）
+    // 但注意：你的 StreamLoader 设计是 operator() 里面自带死循环。
+    // 所以我们不能在这里调用 camera()，否则会卡死在这里，无法往下执行入队逻辑。
+
+    // 【关键修正】：
+    // 你的 StreamLoader 设计是：operator() 负责拉流+解码，把图存到 bgrMat。
+    // 所以我们需要把 camera() 放在一个独立线程里跑（在 main 函数里启动）。
+    // 而这个 Thread_ReadVideo 只需要负责“搬运”：把 camera.bgrMat 搬运到 img_queue。
+
     while (1)
     {
-        // 1. 【核心】从 V4L2 获取原生 MJPEG 数据 (零拷贝，极快)
-        if (camera.get_frame(data_ptr, data_size, buf_index) != 0)
+        // ========== 【现在可以用了】 =================
+        // 检查仓库水位：如果积压超过 30 帧，就暂停进货
+        if (img_queue.size() > 30)
         {
-            printf("V4L2 get_frame failed or timeout.\n");
-            break;
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+            continue; // 主动丢弃这一帧，防止内存爆炸
         }
-        // 2. (不会)【桥接】解码 MJPEG -> cv::Mat。V4L2 给我们的是内存里的一串二进制 JPG 数据,而 OpenCV 处理图像（画框、检测）需要的是BGR 原始像素矩阵
-        cv::Mat raw_data_wrapper(1, data_size, CV_8UC1, data_ptr);
-        cv::Mat decoded_frame = cv::imdecode(raw_data_wrapper, cv::IMREAD_COLOR);
-        // 3. 【核心】归还 Buffer (QBUF) - 必须在解码后立刻执行
-        // 数据已经解码到 decoded_frame 里了，原来的 buffer 必须还给内核
-        camera.put_frame(buf_index);
-        if (decoded_frame.empty())
+        //==============================================
+
+        // 1. 从 StreamLoader 取图
+        // 记得我们刚才在 StreamLoader 里还没加锁，所以这里存在风险。
+        // 但既然你还没加锁，我们先直接取。
+        if (camera.bgrMat.empty())
         {
-            printf("Decode failed\n");
+            // 如果还没图，稍微等一下，别空转烧 CPU
+            std::this_thread::sleep_for(std::chrono::milliseconds(200));
             continue;
         }
-        // 4. 后续逻辑和原来一样：打包、入队
-        // 你的逻辑中 img_index 是引用，多线程要小心，但目前只有一个读线程，没问题
+
+        // 2. 深拷贝图片 (Deep Copy)
+        // 必须 clone！否则 StreamLoader 下一帧解码会覆盖这块内存，导致后续处理出错。
+        cv::Mat current_frame = camera.bgrMat.clone();
+
+        // 3. 序号自增
         {
-            std::lock_guard<mutex> cap_lock(cap_mutex); // 保持锁习惯，虽然单线程读不需要
+            std::lock_guard<mutex> cap_lock(cap_mutex);
             img_index++;
         }
 
+        // 4. 打包入队
         FrameData frame_pack;
-        frame_pack.frame = decoded_frame;
+        frame_pack.frame = current_frame;
         frame_pack.index = img_index;
 
         img_queue.enqueue(frame_pack);
@@ -84,6 +97,9 @@ void Thread_ReadVideo(V4L2Capture &camera, SafeQueue<FrameData> &img_queue, int 
         {
             printf("Read img_index: %d\n", img_index);
         }
+
+        // 简单的帧率控制（可选）
+        // std::this_thread::sleep_for(std::chrono::milliseconds(20));
     }
     finish = true;
 }
@@ -91,7 +107,7 @@ void Thread_ReadVideo(V4L2Capture &camera, SafeQueue<FrameData> &img_queue, int 
 // 2.处理视频
 // mutex bufferMutex;// std::map<int, Mat> ProcessFrameBuffer;
 // ProcessFrameBuffer 是“帧处理缓冲区”
-// map 是共享资源，多线程访问必须加锁,所以配套bufferMutex
+// map 是共享资源，多线程访问必须加锁 ,所以配套bufferMutex
 void Thread_ProcressVideo(SafeQueue<FrameData> &r_queue, SafeQueue<FrameData> &w_queue, bool &read_finish, bool &process_finish)
 {
     // r_queue：读线程生产的帧队列（input）
@@ -356,49 +372,40 @@ void draw_detections(
 // 主函数
 int main()
 {
-    // 记录时间
-    auto start = std::chrono::steady_clock::now();
-    // ================== 1. 初始化 V4L2 相机 ==================
-    // 设置想要的分辨率，比如 1280x720 或 640x480
-    int width = 1280;
-    int height = 720;
-    // 创建V4L2对象
-    V4L2Capture camera("/dev/video0", width, height);
-    if (camera.open_device() < 0)
+    // ================= 修改开始 =================
+    // 1. 设置 RTSP 拉流地址
+    // 这里必须填你【虚拟机】的 IP (192.168.137.181) 和端口 (8554)
+    // 路径必须和你 FFmpeg 推流命令里的 /live/test 一致
+    std::string rtsp_url = "rtsp://192.168.137.181:8554/live/test";
+    int camera_id = 0;
+    // 创建 StreamLoader 实例
+    // 注意：StreamLoader 构造函数里还没开始连网
+    StreamLoader camera(rtsp_url, camera_id);
+    // 【新增】启动拉流线程
+    // StreamLoader::operator() 是一个死循环，负责不停地拉流解码
+    // 我们必须把它放在一个单独的后台线程里跑
+    std::thread stream_thread(std::ref(camera));
+    stream_thread.detach(); // 让它在后台默默工作
+                            // 等待一下，让它有时间连上网并解出第一帧
+    // 否则后面获取 width/height 可能是 0
+    printf("Connecting to RTSP stream: %s ...\n", rtsp_url.c_str());
+
+    // 3. 【更稳健的等待】循环检查，直到拿到第一帧画面
+    // 如果还没连上，bgrMat 是空的，width 也会是 0
+    while (camera.bgrMat.empty())
     {
-        fprintf(stderr, "Failed to open camera\n");
-        return -1;
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        printf("Waiting for stream...\n");
     }
-    // ====================================================
-    // 🔴 核心修复点：必须在这里更新 width 和 height！
-    // 只有这样，如果驱动把分辨率改成了 640x480，下面的 FFmpeg 才会知道
-    // ====================================================
-    width = camera.get_width();   // 获取真实宽度
-    height = camera.get_height(); // 获取真实高度
-    printf("Camera open success: %dx%d\n", width, height);
-    // // 测试视频
-    // char video_path[] = "1.mp4";
-    // cv::VideoCapture cap(video_path);
-    // // 打开错误判断
-    // if (!cap.isOpened())
-    // {
-    //     perror("Video_unopened");
-    //     return -1;
-    // }
-    // // 获取视频的长宽，以及帧数
-    // int width = cap.get(CAP_PROP_FRAME_WIDTH);
-    // int height = cap.get(CAP_PROP_FRAME_HEIGHT);
-    // double fps = cap.get(CAP_PROP_FPS);
-    // int frame_num = cap.get(CAP_PROP_FRAME_COUNT);
 
-    // printf("size:%d height:%d fps:%f total:%d\n", width, height, fps, frame_num);
-    // cv::Mat img_tmp;
-    // cap.read(img_tmp);
-    // if (img_tmp.empty())
-    // {
-    //     perror("img_tmp failed");
-    // }
+    // 获取分辨率 (直接从 bgrMat 获取，或者你在 StreamLoader 里加个 getWidth 接口)
+    // 如果 bgrMat 还是空的，说明还没连上，先给个默认值防止报错
+    int width = camera.bgrMat.cols;
+    int height = camera.bgrMat.rows;
 
+    printf("Camera init success (Wait for first frame)... size: %dx%d\n", width, height);
+
+    // ========= 初始化模型 (保持不变) ==================
     post_process(); // 会把 labels_vector 填好
     // // 测试图像
     // char img_name[] = "/home/orangepi/opencv_test/person.jpg";
@@ -435,7 +442,7 @@ int main()
     for (int i = 0; i < num_thread; i++)
     {
         video_readers.emplace_back(Thread_ReadVideo,
-                                   ref(camera), // 传 camera 引用
+                                   ref(camera), // 传 StreamLoader 引用
                                    ref(SafeQueue_Read),
                                    ref(img_index),
                                    ref(cap_m),
@@ -456,7 +463,7 @@ int main()
 
     // ================= 核心修改开始 =================
     // 1. 设置推流地址 (确认是你刚才验证成功的那个 IP)
-    std::string rtmp_url = "rtmp://192.168.137.181/live/test";
+    std::string rtmp_url = "rtmp://192.168.137.181/live/result";
 
     // 2. 组装 FFmpeg 命令管道 (和之前一样)
     // 注意： -s 1280x720 必须和你前面定义的 width/height 完全一致
@@ -489,10 +496,8 @@ int main()
     }
 
     video_p.join(); // 等待处理视频线程完成
-    auto end = std::chrono::steady_clock::now();
-    auto dur = std::chrono::duration_cast<std::chrono::milliseconds>(end - start);
-    std::cout << "程序总运行时间：" << dur.count() << " ms\n";
     video_w.join(); // 等待写入视频线程完成
+
     // 【新增】程序结束前，关闭管道
     pclose(ffmpeg_pipe);
     return 0;

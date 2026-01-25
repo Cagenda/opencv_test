@@ -51,6 +51,12 @@ public:
         std::lock_guard<mutex> lock(m);
         return q.empty();
     }
+    // 【新增】获取当前队列大小（线程安全）
+    int size()
+    {
+        std::lock_guard<mutex> lock(m); // 必须加锁！
+        return q.size();
+    }
 
 private:
     queue<T> q;

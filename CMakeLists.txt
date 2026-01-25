@@ -39,9 +39,17 @@ include_directories(
     ${OpenCV_INCLUDE_DIRS}
     ${RKNN_INCLUDE_DIRS}
     ${RGA_INCLUDE_DIRS}
+    "/usr/include/rockchip"#绝对地址，mpp的
 )
 
 # 定义一个名为 cv 的可执行目标，该目标将从 main.cpp 源文件生成。
-add_executable(app test1.cpp thread_pool.cpp yolov5s.cpp post_process.cpp v4l2_capture.cpp) 
+add_executable(app test1.cpp thread_pool.cpp yolov5s.cpp post_process.cpp v4l2_capture.cpp mpp_decoder.cpp  stream_loader.cpp) 
 # 将 OpenCV 的库与目标可执行文件 cv 链接，确保在程序运行时能够调用 OpenCV 函数。
-target_link_libraries(app ${OpenCV_LIBS}  ${RKNN_LIBS}  ${RGA_LIBS} Threads::Threads)
+target_link_libraries(app ${OpenCV_LIBS}  ${RKNN_LIBS}  ${RGA_LIBS} Threads::Threads rockchip_mpp
+    #新增FFmpeg核心库
+    avformat
+    avcodec
+    avutil
+    swscale
+    swresample
+)

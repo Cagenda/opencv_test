@@ -66,7 +66,7 @@ int V4L2Capture::open_device()
     fmt_video.fmt.pix.height = height_; // 想要的分辨率高
     // 【重点】USB 摄像头为了保帧率，通常必须选 MJPEG (压缩格式)
     //  如果选 YUYV (无压缩)，带宽不够可能只能跑 5fps
-    fmt_video.fmt.pix.pixelformat = V4L2_PIX_FMT_MJPEG;
+    fmt_video.fmt.pix.pixelformat = V4L2_PIX_FMT_YUYV;
     // 扫描方式：现在的摄像头全是逐行扫描，填 NONE 即可
     fmt_video.fmt.pix.field = V4L2_FIELD_NONE;
     // 3.3 =========设置=========
@@ -182,7 +182,7 @@ int V4L2Capture::get_frame(void *&addr, int &size, int &index)
 {
 
     // =================================== 8. 采集循环  ===========================
-    // 取出一个盘子就需要还一个盘子
+    // 取出一个盘子就需要还一个盘子 
     // VIDIOC_DQBUF从驱动的“已完成队列(done queue)”里，把一个 buffer 的“所有权”交还给用户态，并通过 struct v4l2_buffer 告诉你是哪一个 index、这一帧用了多少字节等元数据。
     struct pollfd fds[1];   // 定义一个poll数组，因为 poll 可以同时让保安盯好几个设备
     fds[0].fd = fd;         // 【监视对象】：摄像头的文件描述符
@@ -235,7 +235,7 @@ int V4L2Capture::get_frame(void *&addr, int &size, int &index)
 //====================================9.归还一帧数据帧===============================================
 int V4L2Capture::put_frame(const int index) // 在这里为什么我不用int & index。引用的底层实现其实是指针。在 64 位系统上，指针占 8 个字节。int 通常只有 4 个字节。
 {
-    // QBUF (把盘子还给内核，让它继续去接新的水)
+    // QBUF (把盘子还给内核)
     struct v4l2_buffer buf;
     memset(&buf, 0, sizeof(buf));
     buf.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;

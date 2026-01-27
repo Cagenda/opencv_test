@@ -146,40 +146,86 @@ void mpp_decoder_frame_callback(void *userdata, int width_stride, int height_str
         std::cout << "callback" << std::endl;
         return;
     }
-    //=========0.申请没有垃圾填充的内存================
-    cv::Mat yuvMat(height + height / 2, width, CV_8UC1);
-    // ==========1.获取源数据 (硬件内存) 的起始地址=====
-    uint8_t *src_base = (uint8_t *)data;
-    //====2.获取目标数据 (我们申请的干净内存) 的起始地址==
-    uint8_t *dst_ptr = yuvMat.data;
-    // --- A. 搬运 Y 分量 (亮度) ---
-    // 此时 src_base 指向 Y 平面开头
-    for (int i = 0; i < height; i++)
+    //===============================================利用RGA进行优化==========================================
+    if (self->bgrMat.empty() || self->bgrMat.cols != width || self->bgrMat.rows != height)
     {
-        // 只拷贝有效数据 (width)，跳过末尾的填充数据
-        memcpy(dst_ptr, src_base, width);
-        src_base = src_base + width_stride;
-        dst_ptr = dst_ptr + width;
+        self->bgrMat.create(height, width, CV_8UC3);
     }
 
-    // --- B. 搬运 UV 分量 (色度) ---
-    // 计算 UV 数据在硬件内存中的起始位置
-    // 必须跳过完整的 height_stride 行，且每行长度是 width_stride
-    uint8_t *src_uv = (uint8_t *)data + width_stride * height_stride;
-    for (size_t i = 0; i < height / 2; i++)
+    rga_buffer_t src_img;
+
+    if (fd > 0)
     {
-        memcpy(dst_ptr, src_uv, width);
-        dst_ptr = dst_ptr + width;
-        src_uv = src_uv + width_stride;
+        // 使用fd进行包装，高效零拷贝RK_FORMAT_YCbCr_420_SP 就是 NV12
+        //把一个底层的硬件内存句柄（fd），包装成 RGA 能够识别和操作的“图像对象”
+        src_img = wrapbuffer_fd(fd, width, height, RK_FORMAT_YCbCr_420_SP, width_stride, height_stride);
+    }
+    else
+    {
+        printf("callback failed\n");
+        return;
+    }
+    // 准备目标数据
+    int dst_size = width * height * 3;
+    // 跟最终处理完的图像要去向CPU中的虚拟地址（bgrMat.data），但是RGA只能访问硬件地址，因此将其做一个映射，使其最终输出数据为CPU上的bgrMat中。dst_handle为指向内存中的地址
+    rga_buffer_handle_t dst_handle = importbuffer_virtualaddr(self->bgrMat.data, dst_size);
+    if (dst_handle == 0)
+    {
+        printf("RGA import buffer failed!\n");
+        return;
+    }
+    // 包装目标 buffer，告诉 RGA 我们要输出 BGR888 格式
+    rga_buffer_t dst_img = wrapbuffer_handle(dst_handle, width, height, RK_FORMAT_BGR_888);
+    // 4. 执行转换 (NV12 -> BGR)
+    // imcopy 内部会自动处理格式转换和去 stride
+    // 这里的 usage 通常填 0 即可
+    int ret = imcopy(src_img, dst_img);
+    if (ret <= 0)
+    {
+        printf("RGA imcopy failed: %s\n", imStrError((IM_STATUS)ret));
     }
 
-    //=====================格式转换=====================
-    // 此时 yuvMat 已经是整理好的、连续的内存了，OpenCV 可以完美处理
-    // 结果存入 self->bgrMat
-    cv::cvtColor(yuvMat, self->bgrMat, cv::COLOR_YUV2BGR_NV12);
-
-    // 4. 【计数更新】
+    // 5. 释放 RGA 映射的句柄 (必须释放，否则内存泄漏)句柄其实类似指针，这里要让句柄释放
+    releasebuffer_handle(dst_handle);
+    // 计数
     self->count++;
+
+    //==========以下是CPU读取DMA数据到缓存中再做格式转换和对齐===============================================
+
+    // //=========0.申请没有垃圾填充的内存================
+    // cv::Mat yuvMat(height + height / 2, width, CV_8UC1);
+    // // ==========1.获取源数据 (硬件内存) 的起始地址=====
+    // uint8_t *src_base = (uint8_t *)data;
+    // //====2.获取目标数据 (我们申请的干净内存) 的起始地址==
+    // uint8_t *dst_ptr = yuvMat.data;
+    // // --- A. 搬运 Y 分量 (亮度) ---
+    // // 此时 src_base 指向 Y 平面开头
+    // for (int i = 0; i < height; i++)
+    // {
+    //     // 只拷贝有效数据 (width)，跳过末尾的填充数据
+    //     memcpy(dst_ptr, src_base, width);
+    //     src_base = src_base + width_stride;
+    //     dst_ptr = dst_ptr + width;
+    // }
+
+    // // --- B. 搬运 UV 分量 (色度) ---
+    // // 计算 UV 数据在硬件内存中的起始位置
+    // // 必须跳过完整的 height_stride 行，且每行长度是 width_stride
+    // uint8_t *src_uv = (uint8_t *)data + width_stride * height_stride;
+    // for (size_t i = 0; i < height / 2; i++)
+    // {
+    //     memcpy(dst_ptr, src_uv, width);
+    //     dst_ptr = dst_ptr + width;
+    //     src_uv = src_uv + width_stride;
+    // }
+
+    // //=====================格式转换=====================
+    // // 此时 yuvMat 已经是整理好的、连续的内存了，OpenCV 可以完美处理
+    // // 结果存入 self->bgrMat
+    // cv::cvtColor(yuvMat, self->bgrMat, cv::COLOR_YUV2BGR_NV12);
+
+    // // 4. 【计数更新】
+    // self->count++;
 }
 
 // 从 FFmpeg 拿数据 -> 判断格式 -> 喂给 MPP

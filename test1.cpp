@@ -20,18 +20,29 @@ using namespace cv;
 ThreadPool gthreadpool(12, "/home/orangepi/opencv_test/model/yolov5s.rknn", 3); // 定义一个线程池，这个线程池中有12个线程
 static int g_frame_start_id = 0;                                                // 用于帧的起始id
 
-// 定义每一帧（也就是每一张的图片）的信息
+// 定义每一帧（也就是每一张的图片）的信息，在这里新增了频道的id
 struct FrameData
 {
-    cv::Mat frame; // 创建一个Mat类型的图片（也就是一帧）
-    int index;     // 帧索引
+    cv::Mat frame;  // 创建一个Mat类型的图片（也就是一帧）
+    int index;      // 帧索引
+    int channel_id; // 摄像头的身份证号 (0, 1, 2, 3...)
 };
 // 定义“流水线任务”结构体：我们需要一个结构体来暂存“发出去的订单”。
 struct PendingTask
 {
     int index;                // 帧序号
+    int channerl_id;          // 【新增】记住这是第几路摄像头的任务
     std::future<cv::Mat> fut; // 取餐票 (注意这里是 future<Mat>)
 };
+
+// 【新增】显示缓存：存放每一路最新的 BGR 图片，给拼图线程用
+const int MAX_CHANNELS = 4;                        // 支持4路视频拉流
+std::vector<cv::Mat> display_buffer(MAX_CHANNELS); // 定义一个容器，并且预先存放4个空的Mat
+std::mutex display_mutex;                          // 保护上面的缓存
+
+// 【新增】结果缓存：存放每一路最新的检测结果，给拼图线程画框用
+std::vector<std::vector<Detection>> result_buffer(MAX_CHANNELS);
+std::mutex result_mutex; // 保护上面的缓存
 
 // 创建读取视频队列
 SafeQueue<FrameData> SafeQueue_Read;
@@ -41,9 +52,9 @@ SafeQueue<FrameData> SafeQueue_Write;
 
 // 1. 【生产者】线程函数：只能有一个线程执行它（有mutex）
 // 它的职责是顺序读取视频，并安全地将帧放入队列
-void Thread_ReadVideo(StreamLoader &camera, SafeQueue<FrameData> &img_queue, int &img_index, mutex &cap_mutex, bool &finish)
+void Thread_ReadVideo(std::vector<std::shared_ptr<StreamLoader>> &cameras, SafeQueue<FrameData> &img_queue, int &img_index, mutex &cap_mutex, bool &finish)
 {
-    printf("Read Thread Started (RTSP Mode)...\n");
+    printf("Read Thread Started (Multi-Channel Polling Mode)...\n");
 
     // 启动 StreamLoader 的拉流线程（就在这个函数里跑死循环，或者调用 operator()）
     // 但注意：你的 StreamLoader 设计是 operator() 里面自带死循环。
@@ -54,52 +65,59 @@ void Thread_ReadVideo(StreamLoader &camera, SafeQueue<FrameData> &img_queue, int
     // 所以我们需要把 camera() 放在一个独立线程里跑（在 main 函数里启动）。
     // 而这个 Thread_ReadVideo 只需要负责“搬运”：把 camera.bgrMat 搬运到 img_queue。
 
-    while (1)
+    while (1) // 独立的搬运线程
     {
         // ========== 【现在可以用了】 =================
         // 检查仓库水位：如果积压超过 30 帧，就暂停进货
-        if (img_queue.size() > 30)
+        if (img_queue.size() > 20)
         {
             std::this_thread::sleep_for(std::chrono::milliseconds(10));
             continue; // 主动丢弃这一帧，防止内存爆炸
         }
-        //==============================================
-
-        // 1. 从 StreamLoader 取图
-        // 记得我们刚才在 StreamLoader 里还没加锁，所以这里存在风险。
-        // 但既然你还没加锁，我们先直接取。
-        if (camera.bgrMat.empty())
+        //============================================
+        bool has_new_data = false; // 标记这一轮循环有没有抓到图
+        // ===== B. 轮询所有摄像头 ===============
+        for (int i = 0; i < cameras.size(); i++)
         {
-            // 如果还没图，稍微等一下，别空转烧 CPU
-            std::this_thread::sleep_for(std::chrono::milliseconds(200));
-            continue;
+            cv::Mat frame_copy;
+            bool ready = false;
+            {
+                std::lock_guard<std::mutex> lock(cameras[i]->mat_mutex);
+                if (!cameras[i]->bgrMat.empty())
+                {
+                    frame_copy = cameras[i]->bgrMat.clone();
+                    ready = true;
+                }
+            }
+            if (ready)
+            {
+                // 全局序号自增
+                int current_idx;
+                {
+                    std::lock_guard<mutex> lock(cap_mutex);
+                    img_index++;
+                    current_idx = img_index;
+                }
+                // 打包入队 (只给 AI)
+                FrameData data;
+                data.frame = frame_copy;
+                data.index = current_idx;
+                data.channel_id = i; // 【关键】贴上标签
+
+                img_queue.enqueue(data);
+                has_new_data = true; // 证明有数据读出
+            }
         }
-
-        // 2. 深拷贝图片 (Deep Copy)
-        // 必须 clone！否则 StreamLoader 下一帧解码会覆盖这块内存，导致后续处理出错。
-        cv::Mat current_frame = camera.bgrMat.clone();
-
-        // 3. 序号自增
+        if (!has_new_data)
         {
-            std::lock_guard<mutex> cap_lock(cap_mutex);
-            img_index++;
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
         }
-
-        // 4. 打包入队
-        FrameData frame_pack;
-        frame_pack.frame = current_frame;
-        frame_pack.index = img_index;
-
-        img_queue.enqueue(frame_pack);
 
         // 打印日志
         if (img_index % 60 == 0)
         {
             printf("Read img_index: %d\n", img_index);
         }
-
-        // 简单的帧率控制（可选）
-        // std::this_thread::sleep_for(std::chrono::milliseconds(20));
     }
     finish = true;
 }
@@ -135,11 +153,10 @@ void Thread_ProcressVideo(SafeQueue<FrameData> &r_queue, SafeQueue<FrameData> &w
                 break;
             }
             FrameData frame_in;
-            r_queue.dequeue(frame_in);                                                          // 取出数据，此时frame_in当作是临时存放变量
-                                                                                                // 【关键修改】提交给线程池，拿到 Future（此时代码进入线程池内部）
+            r_queue.dequeue(frame_in);                                                          // 取出数据，此时frame_in当作是临时存放变量 // 【关键修改】提交给线程池，拿到 Future（此时代码进入线程池内部）
             std::future<cv::Mat> fut = gthreadpool.sumbit_task(frame_in.frame, frame_in.index); // 如果pipeline.size小于16，则一直会提交任务，并且执行任务
             // 【关键修改】存入流水线使用 std::move 是因为 future 只能移动不能复制
-            pipeline.push({frame_in.index, std::move(fut)});
+            pipeline.push(PendingTask{frame_in.index, frame_in.channel_id, std::move(fut)}); // 把 channel_id 也存进暂存区
         }
         // =========================================================
         // D. 收货阶段 (Filling Pipeline)
@@ -151,7 +168,13 @@ void Thread_ProcressVideo(SafeQueue<FrameData> &r_queue, SafeQueue<FrameData> &w
             if (front_task.fut.wait_for(std::chrono::seconds(0)) == std::future_status::ready) // 只有准备好了，才去 get()，这时候是瞬间返回的
             {
                 cv::Mat res = front_task.fut.get();
-                w_queue.enqueue({res, front_task.index});
+                //==================================关键修改============================================
+                FrameData result_back;
+                result_back.frame = res;
+                result_back.index = front_task.index;
+                result_back.channel_id = front_task.channerl_id;
+
+                w_queue.enqueue(result_back);
                 pipeline.pop();
             }
             // 如果没准备好 (status == timeout)，代码直接往下走，
@@ -222,54 +245,84 @@ void Thread_ProcressVideo(SafeQueue<FrameData> &r_queue, SafeQueue<FrameData> &w
 //         }
 //     }
 // }
+
 // 3.创建写入视频的函数（消费者）—— 【修改版：使用 Linux 管道】
 // 注意：第一个参数改成了 FILE* pipe_fp，不再是 VideoWriter
-void Thread_WriterVideo(FILE *pipe_fp, SafeQueue<FrameData> &img_q, bool &process_finish)
+// 3. 【最终消费者】拼图 + 推流
+// 新增参数：width, height (画布的总宽高，必须和 FFmpeg 设定的 -s 参数一致)
+void Thread_WriterVideo(FILE *pipe_fp, SafeQueue<FrameData> &res_queue, bool &process_finish, int width, int height)
 {
-    Mat img_tmp;
-    FrameData frame_tmp;
-
-    // 检查管道是否有效
-    if (pipe_fp == nullptr)
+    // 1. 本地缓存：存放 4 路视频的最新一帧“已推理画面”
+    // 初始化为黑色背景，防止刚启动时某路没图显示花屏
+    // 我们假设最多支持 4 路，每路缩放为原来的 1/2
+    int sub_w = width / 2;
+    int sub_h = height / 2;
+    
+    std::vector<cv::Mat> display_cache(4);
+    for (int i = 0; i < 4; i++)
     {
-        printf("Error: FFmpeg pipe is null\n");
-        return;
+        display_cache[i] = cv::Mat::zeros(sub_h, sub_w, CV_8UC3);
     }
 
-    while (1)
+    // 2. 大画布 (拼图结果)
+    // 这张图的大小必须等于 main 函数里 ffmpeg 命令 -s 指定的大小
+    cv::Mat mosaic_canvas(height, width, CV_8UC3, cv::Scalar(0, 0, 0));
+
+    FrameData data_pack;
+    printf("Writer Thread Started... Canvas Size: %dx%d\n", width, height);
+
+    while (true)
     {
         // 退出条件
-        if (process_finish && img_q.empty())
+        if (process_finish && res_queue.empty())
         {
             printf("写线程结束 (All Finished)\n");
             break;
         }
 
-        if (img_q.empty())
+        if (res_queue.empty())
         {
-            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+            std::this_thread::sleep_for(std::chrono::milliseconds(2));
             continue;
         }
 
-        // 取出数据
-        img_q.dequeue(frame_tmp);
-        img_tmp = frame_tmp.frame;
+        // 3. 取出 AI 算好的图
+        res_queue.dequeue(data_pack);
 
-        if (!img_tmp.empty())
-        {
-            // ================= 核心修改 =================
-            // 原来是：writer.write(img_tmp);
-            // 现在是：直接把内存里的 BGR 数据，写入管道文件
-            // img_tmp.data 是图片数据的首地址
-            // img_tmp.total() * img_tmp.elemSize() 是这一帧的总字节数 (1280*720*3)
-            fwrite(img_tmp.data, 1, img_tmp.total() * img_tmp.elemSize(), pipe_fp);
-            // ===========================================
+        if (data_pack.frame.empty()) continue;
+
+        // 4. 【核心逻辑】更新本地缓存
+        // 不管来的是哪一路，先把它缩放成 1/4 大小，存进对应的格子里
+        cv::Mat resized_small;
+        cv::resize(data_pack.frame, resized_small, cv::Size(sub_w, sub_h));
+        
+        // 安全检查：防止 ID 越界
+        if(data_pack.channel_id >= 0 && data_pack.channel_id < 4) {
+            display_cache[data_pack.channel_id] = resized_small;
         }
 
-        // 打印进度
-        if (frame_tmp.index > 0 && frame_tmp.index % 60 == 0)
+        // 5. 重新拼图 (每次有新图来，就重绘一遍大画布)
+        // 0号放左上 (0, 0)
+        display_cache[0].copyTo(mosaic_canvas(cv::Rect(0, 0, sub_w, sub_h)));
+        // 1号放右上 (sub_w, 0)
+        display_cache[1].copyTo(mosaic_canvas(cv::Rect(sub_w, 0, sub_w, sub_h)));
+        // 2号放左下 (0, sub_h)
+        display_cache[2].copyTo(mosaic_canvas(cv::Rect(0, sub_h, sub_w, sub_h)));
+        // 3号放右下 (sub_w, sub_h)
+        display_cache[3].copyTo(mosaic_canvas(cv::Rect(sub_w, sub_h, sub_w, sub_h)));
+
+        // 6. 推流发送
+        // 只有当管道有效时才写
+        if (pipe_fp)
         {
-            printf("write index %d finished \n", frame_tmp.index);
+            // 注意：这里写的是 mosaic_canvas (拼好的大图)，而不是 data_pack.frame
+            fwrite(mosaic_canvas.data, 1, mosaic_canvas.total() * mosaic_canvas.elemSize(), pipe_fp);
+        }
+        
+        // 打印进度 (每30帧打印一次，避免刷屏)
+        if (data_pack.index > 0 && data_pack.index % 30 == 0) 
+        {
+            printf("Pushed Mosaic Frame %d (from Cam %d)\n", data_pack.index, data_pack.channel_id);
         }
     }
 }
@@ -373,60 +426,67 @@ void draw_detections(
 int main()
 {
     // ================= 修改开始 =================
-    // 1. 设置 RTSP 拉流地址
+    // 1. 设置 多路RTSP 拉流地址
     // 这里必须填你【虚拟机】的 IP (192.168.137.181) 和端口 (8554)
     // 路径必须和你 FFmpeg 推流命令里的 /live/test 一致
-    std::string rtsp_url = "rtsp://192.168.137.181:8554/live/test";
-    int camera_id = 0;
-    // 创建 StreamLoader 实例
+    std::vector<string> rtsp_url = {
+        "rtsp://192.168.137.181:8554/live/test",
+        "rtsp://192.168.137.181:8554/live/test",
+        "rtsp://192.168.137.181:8554/live/test",
+        "rtsp://192.168.137.181:8554/live/test"};
+    // 批量创建StreamLoader对象
     // 注意：StreamLoader 构造函数里还没开始连网
-    StreamLoader camera(rtsp_url, camera_id);
-    // 【新增】启动拉流线程
-    // StreamLoader::operator() 是一个死循环，负责不停地拉流解码
-    // 我们必须把它放在一个单独的后台线程里跑
-    std::thread stream_thread(std::ref(camera));
-    stream_thread.detach(); // 让它在后台默默工作
-                            // 等待一下，让它有时间连上网并解出第一帧
-    // 否则后面获取 width/height 可能是 0
-    printf("Connecting to RTSP stream: %s ...\n", rtsp_url.c_str());
-
-    // 3. 【更稳健的等待】循环检查，直到拿到第一帧画面
-    // 如果还没连上，bgrMat 是空的，width 也会是 0
-    while (camera.bgrMat.empty())
+    std::vector<std::shared_ptr<StreamLoader>> cameras;
+    for (int i = 0; i < rtsp_url.size(); i++)
     {
-        std::this_thread::sleep_for(std::chrono::milliseconds(100));
-        printf("Waiting for stream...\n");
+        // A创建对象
+        auto loader = std::make_shared<StreamLoader>(rtsp_url[i], i); // 后面是传递给构造函数的参数
+        cameras.push_back(loader);                                    // 放入vector中
+        // B启动线程
+        std::thread t([loader]()
+                      { (*loader)(); });
+        // 线程分离
+        t.detach();
+        printf("Camera [%d] started...\n", i);
     }
+
+    // 3. 【更稳健的等待】等待所有摄像头都准备好
+    // 我们必须确保每一路都有图了，才能进入后面的主循环，否则拼图时 resize 空图会崩
+    printf("Waiting for all streams to initialize...\n");
+
+    for (int i = 0; i < cameras.size(); i++)
+    {
+        while (true)
+        {
+            // 加锁检查（因为后台线程正在写这个 mat）
+            // 虽然 empty() 检查通常很快，但为了严谨最好加锁，或者你的类里有个 is_ready 原子变量更好
+            bool is_empty = false;
+            is_empty = cameras[i]->bgrMat.empty();
+
+            if (!is_empty)
+            {
+                printf("Camera [%d] is ready!\n", i);
+                break; // 这一路好了，跳出 while，去检查下一路（i++）
+            }
+
+            // 还没好，睡一会再看
+            std::this_thread::sleep_for(std::chrono::milliseconds(50));
+            // printf("Waiting for Camera [%d]...\n", i); // 可以在这里打印等待日志
+        }
+    }
+    printf("All cameras are online! Starting main loop...\n");
 
     // 获取分辨率 (直接从 bgrMat 获取，或者你在 StreamLoader 里加个 getWidth 接口)
     // 如果 bgrMat 还是空的，说明还没连上，先给个默认值防止报错
-    int width = camera.bgrMat.cols;
-    int height = camera.bgrMat.rows;
+    int width = cameras[0]->bgrMat.cols;
+    int height = cameras[0]->bgrMat.rows;
 
     printf("Camera init success (Wait for first frame)... size: %dx%d\n", width, height);
 
     // ========= 初始化模型 (保持不变) ==================
     post_process(); // 会把 labels_vector 填好
     // // 测试图像
-    // char img_name[] = "/home/orangepi/opencv_test/person.jpg";
-    // cv::Mat img_tmp2 = cv::imread(img_name, IMREAD_COLOR);
-    // Yolov5s yolov5s("/home/orangepi/opencv_test/model/yolov5s.rknn", 0);
-    // // 3. 推理，拿 dets
-    // std::vector<Detection> dets;
-    // int ret = yolov5s.inference_image(img_tmp2, dets);
-    // if (ret != 0)
-    // {
-    //     std::cerr << "inference_image failed, ret = " << ret << std::endl;
-    //     return -1;
-    // }
-    // // 4. 画框
-    // draw_detections(img_tmp2, dets, labels_vector);
-    // // 5. 保存结果
-    // cv::imwrite("/home/orangepi/opencv_test/result.jpg", img_tmp2);
-    // std::cout << "saved to /home/orangepi/opencv_test/result.jpg\n";
-    // while (1)
-    //     ; // 插入断点
-    // 定义锁(全局)，专门用于在读取原视频的时候，锁住，防止多个线程读取原视频
+
     mutex cap_m;
 
     // 利用容器创建多线程，创建读视频的线程
@@ -442,7 +502,7 @@ int main()
     for (int i = 0; i < num_thread; i++)
     {
         video_readers.emplace_back(Thread_ReadVideo,
-                                   ref(camera), // 传 StreamLoader 引用
+                                   ref(cameras), // 传 StreamLoader 引用
                                    ref(SafeQueue_Read),
                                    ref(img_index),
                                    ref(cap_m),
@@ -487,7 +547,7 @@ int main()
     // 创建一个写入视频的线程
     // 创建一个写入视频的线程 —— 【注意：这里传参变了】
     // 传入的是 ffmpeg_pipe 指针，而不是 writer
-    std::thread video_w(Thread_WriterVideo, ffmpeg_pipe, ref(SafeQueue_Write), ref(is_process_done));
+    std::thread video_w(Thread_WriterVideo, ffmpeg_pipe, ref(SafeQueue_Write), ref(is_process_done),width,height);
 
     // 回收线程资源
     for (thread &t : video_readers)

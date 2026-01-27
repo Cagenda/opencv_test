@@ -6,6 +6,10 @@
 #include <vector>
 #include <iostream>
 
+// 【新增】引入 RGA 头文件
+#include "im2d.h"
+#include "rga.h"
+#include "RgaUtils.h"
 // 2. 引入 OpenCV
 #include <opencv2/opencv.hpp>
 
@@ -30,7 +34,6 @@ public:
     void open();
     void operator()();
 
-
     int read_frame();
 
     void close();
@@ -43,7 +46,7 @@ public:
     int status;
     int count;
     int videoStreamIndex = -1; // 一个RTSP 可能包含视频、音频、字幕。我们要找到“视频”那一轨，因此需要循环遍历
-
+    std::mutex mat_mutex;
     cv::Mat bgrMat;
     // 存放转换后的BGR 图像（YOLO用这个)
 

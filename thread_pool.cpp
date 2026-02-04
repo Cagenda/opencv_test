@@ -53,7 +53,6 @@ ThreadPool::ThreadPool(int num_thread, const std::string &model_path, int npu_co
     for (size_t i = 0; i < num_thread; i++)
     {
         // 创建了工作者线程
-
         threads.emplace_back(&ThreadPool::worker, this, i);
     }
     std::cout << "ThreadPool Init" << std::endl;
@@ -89,17 +88,6 @@ std::future<cv::Mat> ThreadPool::sumbit_task(const cv::Mat &img, int index)
         auto now_time_t = std::chrono::system_clock::to_time_t(now);
         auto now_ms = std::chrono::duration_cast<std::chrono::milliseconds>(now.time_since_epoch()) % 1000;
 
-        // 打印【开始】日志
-        // 格式：[开始] 时间 线程ID 任务序号
-        // 使用 printf 是为了原子性好一点，防止多线程 cout 输出乱序
-        // printf("[Start] Time=%02ld:%02ld:%02ld.%03ld | Thread=%s | TaskIndex=%d\n",
-        //        (now_time_t / 3600) % 24 + 8, // 简单调整时区(UTC+8)，如果系统时间已校准可去掉+8
-        //        (now_time_t / 60) % 60,
-        //        now_time_t % 60,
-        //        now_ms.count(),
-        //        ss_id.str().c_str(),
-        //        index);
-
         // ======================= 2. 执行原有核心逻辑 =======================
         // 记录高精度计时起点（用于计算耗时）
         auto t1 = std::chrono::high_resolution_clock::now();
@@ -108,8 +96,6 @@ std::future<cv::Mat> ThreadPool::sumbit_task(const cv::Mat &img, int index)
         cv::Mat out = img.clone();
         std::vector<Detection> dets;
 
-        // 模拟耗时（如果你想测试并发，可以把这行取消注释）
-        // std::this_thread::sleep_for(std::chrono::milliseconds(500));
 
         yolo.inference_image(out, dets);
         draw_detections(out, dets, labels_vector);
@@ -123,17 +109,6 @@ std::future<cv::Mat> ThreadPool::sumbit_task(const cv::Mat &img, int index)
         now = std::chrono::system_clock::now();
         now_time_t = std::chrono::system_clock::to_time_t(now);
         now_ms = std::chrono::duration_cast<std::chrono::milliseconds>(now.time_since_epoch()) % 1000;
-
-        // ======================= 1. 准备日志信息 =======================
-        // ... (前面的时间获取代码可以保留也可以注释，为了省事直接注释打印即可) ...
-        // printf("[End  ] Time=%02ld:%02ld:%02ld.%03ld | Thread=%s | TaskIndex=%d | Cost=%.2f ms\n",
-        //        (now_time_t / 3600) % 24 + 8,
-        //        (now_time_t / 60) % 60,
-        //        now_time_t % 60,
-        //        now_ms.count(),
-        //        ss_id.str().c_str(),
-        //        index,
-        //        duration);
 
         return out;
     };
@@ -170,7 +145,7 @@ std::future<cv::Mat> ThreadPool::sumbit_task(const cv::Mat &img, int index)
 //============================工作者函数worker()===================================
 void ThreadPool::worker(int id)
 {
-    tls_worker_id = id; // ✅ 让本线程知道自己是哪个 worker（用于绑定 core),我一共创建了6个工作者线程
+    tls_worker_id = id; // ✅ 让本线程知道自己是哪个 worker（用于绑定 core),我一共创建了16/12/6个工作者线程
     // worker(id) 启动时：tls_worker_id = id;get_tls_yolo() 用 tls_worker_id % npu_core_num 选 core
 
     while (run)
@@ -199,64 +174,3 @@ void ThreadPool::worker(int id)
     }
 }
 
-//----------------获取结果函数
-// int ThreadPool::get_result(cv::Mat &img, int index)
-// {
-//     using namespace std::chrono;
-//     //=============改进版本===========================
-//     std::unique_lock<std::mutex> lock(res_mtx);
-//     int loop = 0;
-//     const int max_loop = 1000;             // 和原来逻辑对应：最多等待 1000 次
-//     const auto duration = milliseconds(5); // 每次最多等 5ms
-
-//     while (img_result.find(index) == img_result.end())
-//     {
-//         // 如果线程池已经停了，而且没有这个结果，就不用再等了
-//         if (!run)
-//         {
-//             std::cout << "ThreadPool 已停止，index " << index
-//                       << " 没有结果" << std::endl;
-//             return -1;
-//         }
-
-//         // 等待最多 5ms，有新结果插入时 res_cond.notify_one() 会唤醒/*等结果的线程醒来后执行的判断：如果我要找的 index 结果已经出现在 img_result 里，或者线程池要退出了那么停止等待，结束 wait_for。*/
-//         res_cond.wait_for(
-//             lock,
-//             duration,
-//             [this, index]
-//             {
-//                 return (img_result.find(index) != img_result.end()) || !run;
-//             });
-//         // 2️⃣ 5ms 结束 / 被 notify / run=false / 条件变真 之后，程序就是从这里继续往下执行
-
-//         ++loop;
-//         if (loop > max_loop)
-//         {
-//             std::cout << "Get results Timeout for index " << index << std::endl;
-//             return -1; // 超时：返回错误码
-//         }
-//     }
-
-//     // 能走到这里说明 img_result[index] 一定存在，并且还在持有 res_mtx
-//     auto it = img_result.find(index);
-//     img = it->second;     // 拷贝/浅拷贝图像
-//     img_result.erase(it); // 删除这条记录，防止内存堆积
-//     return 0;
-// }
-
-// int loop = 0;
-// while(img_result.find(index)==img_result.end())
-// {
-// std::this_thread::sleep_for(std::chrono::milliseconds(5));
-// loop++;
-// if(loop>1000)
-// {
-//     std::cout << "Get results Timeout" <<std:: endl;
-// }
-// }
-// {
-// std::lock_guard<std::mutex> lock(res_mtx);
-// img = img_result[index];
-// img_result.erase(index);
-// }
-// return 0;

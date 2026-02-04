@@ -28,8 +28,19 @@ set(RKNN_API_PATH ${3DPARTY_PATH}/librknn_api)
 set(RKNN_INCLUDE_DIRS ${RKNN_API_PATH}/include)
 set(RKNN_LIBS ${RKNN_API_PATH}/${LIB_ARCH}/librknnrt.so)
 
+#============== 设定 GB28181 依赖库路径 =============
+set(SIP_INSTALL_PATH ${CMAKE_CURRENT_SOURCE_DIR}/install)
+set(SIP_INCLUDE_DIRS ${SIP_INSTALL_PATH}/include)
+set(SIP_LIB_DIR ${SIP_INSTALL_PATH}/lib)
 
-#==============================rga_lib====================
+# 这种写法就不需要 link_directories 了，因为它是绝对路径
+set(SIP_LIBS 
+    ${SIP_LIB_DIR}/libeXosip2.so 
+    ${SIP_LIB_DIR}/libosip2.so 
+    ${SIP_LIB_DIR}/libosipparser2.so#暂时有问题跑不通
+)
+
+#====================设定rga_lib====================
 set(RGA_DIR ${3DPARTY_PATH}/rga/${DEVICE_NAME})
 set(RGA_INCLUDE_DIRS ${RGA_DIR}/include)
 set(RGA_LIBS ${RGA_DIR}/lib/Linux/aarch64/librga.so)
@@ -40,6 +51,7 @@ include_directories(
     ${RKNN_INCLUDE_DIRS}
     ${RGA_INCLUDE_DIRS}
     "/usr/include/rockchip"#绝对地址，mpp的
+    ${SIP_INCLUDE_DIRS}  #GB28182头文件
 )
 
 # 定义一个名为 cv 的可执行目标，该目标将从 main.cpp 源文件生成。
@@ -52,4 +64,6 @@ target_link_libraries(app ${OpenCV_LIBS}  ${RKNN_LIBS}  ${RGA_LIBS} Threads::Thr
     avutil
     swscale
     swresample
+   
+    ${SIP_LIBS} #GB2818
 )

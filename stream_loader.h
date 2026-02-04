@@ -51,7 +51,8 @@ public:
     // 存放转换后的BGR 图像（YOLO用这个)
 
     AVPacket *temp_pkt = nullptr; // 在read函数中调用
-    AVFormatContext *fmtCtx = nullptr;
+    AVFormatContext *fmtCtx = nullptr;// fmtCtx意义：FFmpeg 打开 RTSP 流后，把所有“这个流的全局信息 + 读取状态”都放进 fmtCtx 里
+
     // 过滤器相关（用于处理H.264格式)
     const AVBitStreamFilter *bsf = nullptr; // bsf指向可以变
     AVBSFContext *bsf_ctx = nullptr;

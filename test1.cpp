@@ -13,6 +13,7 @@
 #include "v4l2_capture.h"
 // 2. 包含图像I/O和GUI函数头文件， 定义了 imread, imshow, waitKey#include <iostream>
 #include "stream_loader.h"
+#include "gb28181_agent.h"
 
 using namespace std;
 using namespace cv;
@@ -257,7 +258,7 @@ void Thread_WriterVideo(FILE *pipe_fp, SafeQueue<FrameData> &res_queue, bool &pr
     // 我们假设最多支持 4 路，每路缩放为原来的 1/2
     int sub_w = width / 2;
     int sub_h = height / 2;
-    
+
     std::vector<cv::Mat> display_cache(4);
     for (int i = 0; i < 4; i++)
     {
@@ -289,15 +290,17 @@ void Thread_WriterVideo(FILE *pipe_fp, SafeQueue<FrameData> &res_queue, bool &pr
         // 3. 取出 AI 算好的图
         res_queue.dequeue(data_pack);
 
-        if (data_pack.frame.empty()) continue;
+        if (data_pack.frame.empty())
+            continue;
 
         // 4. 【核心逻辑】更新本地缓存
         // 不管来的是哪一路，先把它缩放成 1/4 大小，存进对应的格子里
         cv::Mat resized_small;
         cv::resize(data_pack.frame, resized_small, cv::Size(sub_w, sub_h));
-        
+
         // 安全检查：防止 ID 越界
-        if(data_pack.channel_id >= 0 && data_pack.channel_id < 4) {
+        if (data_pack.channel_id >= 0 && data_pack.channel_id < 4)
+        {
             display_cache[data_pack.channel_id] = resized_small;
         }
 
@@ -318,9 +321,9 @@ void Thread_WriterVideo(FILE *pipe_fp, SafeQueue<FrameData> &res_queue, bool &pr
             // 注意：这里写的是 mosaic_canvas (拼好的大图)，而不是 data_pack.frame
             fwrite(mosaic_canvas.data, 1, mosaic_canvas.total() * mosaic_canvas.elemSize(), pipe_fp);
         }
-        
+
         // 打印进度 (每30帧打印一次，避免刷屏)
-        if (data_pack.index > 0 && data_pack.index % 30 == 0) 
+        if (data_pack.index > 0 && data_pack.index % 30 == 0)
         {
             printf("Pushed Mosaic Frame %d (from Cam %d)\n", data_pack.index, data_pack.channel_id);
         }
@@ -367,7 +370,7 @@ void Thread_WriterVideo(FILE *pipe_fp, SafeQueue<FrameData> &res_queue, bool &pr
 //     }
 // }
 
-//==================================简单的画框函数===========================
+//=============简单的画框函数===========================
 void draw_detections(
     cv::Mat &img,
     const std::vector<Detection> &dets,
@@ -422,9 +425,28 @@ void draw_detections(
     }
 }
 
+GB28181Agent g_sip_agent; // 全局国标代理实例
+
 // 主函数
 int main()
 {
+    // 初步调试GB28181 LiveGBS地址：http://172.18.194.174:8080/#/devices/1?online=true
+    const char *server_ip = "192.168.137.1";        // 你的国标平台 IP (需修改)
+    const char *device_id = "34020000001320000001"; // 设备 20 位 ID（可以自己选择合适的）
+    const char *password = "gbs12345";              // 注册密码
+    cout << ">>> 正在启动国标 GB28181 信令模块..." << endl;
+    // 平台 SIP 端口：15060
+    // 本机监听端口：5061
+    // 本机监听IP：0.0.0.0 可以（监听全部网卡）
+    if (g_sip_agent.start(server_ip, 15060, "0.0.0.0", 5060, device_id, password) != 0)
+    {
+        cerr << "!!! 国标代理启动失败，请检查网络或端口占用" << endl;
+        // 即使失败，通常也建议继续运行本地 AI 逻辑
+    }
+
+    while (1)
+        ;
+
     // ================= 修改开始 =================
     // 1. 设置 多路RTSP 拉流地址
     // 这里必须填你【虚拟机】的 IP (192.168.137.181) 和端口 (8554)
@@ -547,7 +569,7 @@ int main()
     // 创建一个写入视频的线程
     // 创建一个写入视频的线程 —— 【注意：这里传参变了】
     // 传入的是 ffmpeg_pipe 指针，而不是 writer
-    std::thread video_w(Thread_WriterVideo, ffmpeg_pipe, ref(SafeQueue_Write), ref(is_process_done),width,height);
+    std::thread video_w(Thread_WriterVideo, ffmpeg_pipe, ref(SafeQueue_Write), ref(is_process_done), width, height);
 
     // 回收线程资源
     for (thread &t : video_readers)

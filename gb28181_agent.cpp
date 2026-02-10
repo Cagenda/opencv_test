@@ -2,8 +2,8 @@
 #include <iostream>
 #include <unistd.h>
 
-// 初始化参数列表，将ctx=nullptr,is_running=false
-GB28181Agent::GB28181Agent() : ctx(nullptr), is_running(false) {}
+// 初始化参数列表，将ctx=nullptr,is_running=false, heartbeat_thread=nullptr
+GB28181Agent::GB28181Agent() : ctx(nullptr), is_running(false), heartbeat_thread(nullptr) {}
 // 调用stop()函数
 GB28181Agent::~GB28181Agent() { stop(); }
 
@@ -25,7 +25,11 @@ int GB28181Agent::start(const char *server_ip, int server_port, const char *loca
         return -1;
     }
 
+    // ================= [修改] 保存参数到成员变量 =================
     device_id_ = device_id;
+    server_ip_ = server_ip;
+    server_port_ = server_port;
+
     is_running = true;
 
     // 3. ==============构建注册消息====================
@@ -67,6 +71,65 @@ int GB28181Agent::start(const char *server_ip, int server_port, const char *loca
     return 0;
 }
 
+// gb28181_agent.cpp
+
+void GB28181Agent::heartbeat_loop()
+{
+    int sn = 1; // 心跳序列号
+    while (is_running)
+    {
+        // 1. 构建心跳 XML (保持不变)
+        std::stringstream ss;
+        ss << "<?xml version=\"1.0\" encoding=\"GB2312\"?>\r\n";
+        ss << "<Notify>\r\n";
+        ss << "<CmdType>Keepalive</CmdType>\r\n";
+        ss << "<SN>" << sn++ << "</SN>\r\n";
+        ss << "<DeviceID>" << device_id_ << "</DeviceID>\r\n";
+        ss << "<Status>OK</Status>\r\n";
+        ss << "</Notify>\r\n";
+
+        std::string body = ss.str();
+
+        // 2. 动态构建 SIP 地址
+        // 目标格式: sip:服务器ID@服务器IP:端口 (服务器ID通常就是域ID，这里暂用设备ID前10位或直接发给服务器IP)
+        // 为了通用，我们直接发给 "sip:server_ip:server_port"
+
+        char server_uri[100];
+        char local_uri[100];
+
+        // 1. IP 和 Port：负责“物理传输” (Socket层)
+        //    告诉 eXosip 底层：把这个包通过网线发到 192.168.137.1 的 5060 端口。
+        //    如果没有这两个，数据包连网卡都出不去。
+        sprintf(server_uri, "sip:%s:%d", server_ip_.c_str(), server_port_);
+
+        // 构建本地 URI (比如 sip:3402000...001@192.168.137.1:5060)
+        // 注意：From 头域通常需要包含设备ID
+        sprintf(local_uri, "sip:%s@%s:%d", device_id_.c_str(), server_ip_.c_str(), server_port_);
+
+        osip_message_t *request = nullptr;
+
+        eXosip_lock(ctx);
+        // 使用动态构建的 URI 发送 MESSAGE
+        int ret = eXosip_message_build_request(ctx, &request,
+                                               "MESSAGE",
+                                               server_uri, // To: 服务器
+                                               local_uri,  // From: 设备自己
+                                               nullptr);
+
+        if (ret == 0 && request != nullptr)
+        {
+            osip_message_set_body(request, body.c_str(), body.length());
+            osip_message_set_content_type(request, "Application/MANSCDP+xml");
+            eXosip_message_send_request(ctx, request);
+            std::cout << ">>> 发送心跳 SN=" << (sn - 1) << " To: " << server_uri << std::endl;
+        }
+        eXosip_unlock(ctx);
+
+        // 3. 休眠 60 秒
+        sleep(60);
+    }
+}
+
 void GB28181Agent::event_loop()
 {
     while (is_running)
@@ -84,6 +147,10 @@ void GB28181Agent::event_loop()
         {
             std::cout << ">>> 注册成功 (200 OK) <<<" << std::endl;
             // 可以在这里启动心跳线程
+            if (heartbeat_thread == nullptr)
+            {
+                heartbeat_thread = new std::thread(&GB28181Agent::heartbeat_loop, this);
+            }
         }
         else if (evt->type == EXOSIP_REGISTRATION_FAILURE)
         {
@@ -98,7 +165,18 @@ void GB28181Agent::stop()
 {
     is_running = false;
     if (event_thread && event_thread->joinable())
+    {
         event_thread->join();
+        delete event_thread;
+        event_thread = nullptr;
+    }
+
+    if (heartbeat_thread && heartbeat_thread->joinable())
+    {
+        heartbeat_thread->join();
+        delete heartbeat_thread;
+        heartbeat_thread = nullptr;
+    }
     eXosip_quit(ctx);
     osip_free(ctx);
 }
